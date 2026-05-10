@@ -10,6 +10,7 @@ Java-basierter BMS-Monitor für Daly Batterie-Management-Systeme. Liest das BMS 
 - **📖 Swagger-UI** — Interaktive API-Dokumentation unter `/swagger/`
 - **⚙️ Konfigurationsdatei** — Alle Einstellungen in `config.properties`, CLI-Argumente überschreiben
 - **🔄 On-Demand-Polling** — BMS wird nur bei API-Requests abgefragt, kein Dauer-Polling
+- **🔒 Read-Only Modus** — Schreibzugriffe (MOSFET, SOC) standardmäßig gesperrt, mit `--read-write` freischaltbar
 
 ## Voraussetzungen
 
@@ -26,8 +27,11 @@ nano config.properties
 # 2. Bauen
 ./build.sh
 
-# 3. Starten
+# 3. Starten (Read-Only, kein Schreibzugriff):
 java -jar dist/DalyBMS.jar
+
+# Mit Schreibzugriff:
+java -jar dist/DalyBMS.jar --read-write
 
 # Dashboard: http://localhost:8080/
 # Swagger:   http://localhost:8080/swagger/

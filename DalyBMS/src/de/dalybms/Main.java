@@ -49,6 +49,9 @@ public class Main {
                 case "--poll-interval":
                     config.override("http.poll_interval_seconds", args[++i]);
                     break;
+                case "--read-write":
+                    config.override("readonly", "false");
+                    break;
                 case "--verbose":
                 case "-v":
                     config.override("verbose", "true");
@@ -92,7 +95,7 @@ public class Main {
         }
 
         try {
-            BmsRestServer restServer = new BmsRestServer(bms, config.getHttpPort());
+            BmsRestServer restServer = new BmsRestServer(bms, config.getHttpPort(), config.isReadOnly());
             restServer.start();
 
             logger.info("Server läuft. Beenden mit Ctrl+C");
@@ -156,6 +159,7 @@ public class Main {
         System.out.println("  --mqtt-user         MQTT Benutzername");
         System.out.println("  --mqtt-password     MQTT Passwort");
         System.out.println("  --mqtt-topic        MQTT Topic (Standard: daly_bms)");
+        System.out.println("  --read-write        Schreibzugriff erlauben (MOSFET, SOC)");
         System.out.println("  -v, --verbose       Ausführliche Ausgabe");
         System.out.println("  -h, --help          Diese Hilfe anzeigen");
         System.out.println();

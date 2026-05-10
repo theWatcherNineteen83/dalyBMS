@@ -28,6 +28,9 @@ public class BmsRestServer {
     private MqttPublisher mqtt;
     private boolean mqttEnabled = false;
 
+    // Schützt vor versehentlichem Schreiben (Default: true)
+    private final boolean readOnly;
+
     // Gecachte BMS-Daten (thread-safe)
     private volatile DalyBMSData cachedData;
     private volatile String lastUpdate = "never";
@@ -39,9 +42,10 @@ public class BmsRestServer {
     /**
      * Konstruktor ohne MQTT
      */
-    public BmsRestServer(DalyBMS bms, int httpPort) {
+    public BmsRestServer(DalyBMS bms, int httpPort, boolean readOnly) {
         this.bms = bms;
         this.httpPort = httpPort;
+        this.readOnly = readOnly;
     }
 
     /**
@@ -50,9 +54,10 @@ public class BmsRestServer {
     public BmsRestServer(DalyBMS bms, int httpPort,
                          String mqttBroker, int mqttPort,
                          String mqttUser, String mqttPassword,
-                         String mqttTopic) {
+                         String mqttTopic, boolean readOnly) {
         this.bms = bms;
         this.httpPort = httpPort;
+        this.readOnly = readOnly;
         this.mqtt = new MqttPublisher(mqttBroker, mqttPort,
                 mqttUser, mqttPassword, mqttTopic);
         this.mqttEnabled = true;
@@ -107,6 +112,7 @@ public class BmsRestServer {
         logger.info("REST Server gestartet auf Port " + httpPort);
         logger.info("Modus: On-Demand (BMS wird nur bei Request abgefragt)");
         logger.info("MQTT: " + (mqttEnabled ? "aktiv (sendet bei jedem GET)" : "deaktiviert"));
+        logger.info("Schreibzugriff: " + (readOnly ? "READ-ONLY (--read-write zum Aktivieren)" : "aktiviert"));
         logger.info("==============================================");
         logger.info("Dashboard:        http://localhost:" + httpPort + "/");
         logger.info("Swagger UI:       http://localhost:" + httpPort + "/swagger/");
@@ -386,6 +392,11 @@ public class BmsRestServer {
         }
         if (!"PUT".equals(exchange.getRequestMethod())) {
             sendError(exchange, 405, "Nur PUT erlaubt");
+            return false;
+        }
+        if (readOnly) {
+            sendError(exchange, 403, "Schreibzugriff deaktiviert (READ-ONLY Modus). "
+                    + "Zum Aktivieren: --read-write");
             return false;
         }
         return true;

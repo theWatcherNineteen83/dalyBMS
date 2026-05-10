@@ -53,6 +53,7 @@ public class Config {
         props.setProperty("mqtt.username", "dalybms");
         props.setProperty("mqtt.password", "eveakku");
         props.setProperty("mqtt.topic", "daly_bms");
+        props.setProperty("readonly", "true");
         props.setProperty("verbose", "false");
     }
 
@@ -190,6 +191,10 @@ public class Config {
         return props.getProperty("mqtt.topic");
     }
 
+    public boolean isReadOnly() {
+        return Boolean.parseBoolean(props.getProperty("readonly"));
+    }
+
     public boolean isVerbose() {
         return Boolean.parseBoolean(props.getProperty("verbose"));
     }
@@ -216,6 +221,7 @@ public class Config {
         System.out.printf("  MQTT Broker:          %s%n", getMqttBroker());
         System.out.printf("  MQTT Port:            %d%n", getMqttPort());
         System.out.printf("  MQTT Topic:           %s%n", getMqttTopic());
+        System.out.printf("  Read-Only:            %s%n", isReadOnly() ? "JA (--read-write zum Entsperren)" : "NEIN (Schreibzugriff aktiv)");
         System.out.printf("  Verbose:              %s%n", isVerbose());
         System.out.println("══════════════════════════════════════");
     }
