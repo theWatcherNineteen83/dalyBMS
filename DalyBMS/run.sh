@@ -5,10 +5,11 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 JAR="${SCRIPT_DIR}/dist/DalyBMS.jar"
+CONFIG="${SCRIPT_DIR}/config.properties"
 
-# Falls aus dist/ gestartet
-if [ ! -f "$JAR" ]; then
-    JAR="${SCRIPT_DIR}/DalyBMS.jar"
+# Falls aus dist/ gestartet (config.properties liegt im Projektroot)
+if [ ! -f "${CONFIG}" ]; then
+    CONFIG="$(dirname "${SCRIPT_DIR}")/config.properties"
 fi
 
 if [ ! -f "$JAR" ]; then
@@ -18,50 +19,35 @@ if [ ! -f "$JAR" ]; then
 fi
 
 # ============================================================
-# Standard-Konfiguration
-# (Passe diese Werte an dein Setup an)
+# Konfiguration aus config.properties (falls vorhanden)
 # ============================================================
-DEVICE="/dev/ttyUSB0"
-HTTP_PORT="8080"
-POLL_INTERVAL="30"
-MQTT_BROKER="192.168.20.100"
-MQTT_PORT="1883"
-MQTT_USER="dalybms"
-MQTT_PASSWORD="eveakku"
-MQTT_TOPIC="daly_bms"
+if [ -f "${CONFIG}" ]; then
+    echo "Lade Konfiguration: ${CONFIG}"
+    # Shell-kompatibel sourcen (nur KEY=VALUE Zeilen)
+    while IFS='=' read -r key value; do
+        # Kommentare und Leerzeilen überspringen
+        case "$key" in
+            ''|\#*) continue ;;
+        esac
+        # Nur gültige Shell-Variablen exportieren
+        key=$(echo "$key" | tr '.' '_' | tr -d ' ')
+        value=$(echo "$value" | sed 's/[[:space:]]*#.*//' | xargs)
+        export "$key=$value"
+    done < "${CONFIG}"
+fi
 
 # ============================================================
-# Modus wählen (auskommentieren was nicht gebraucht wird)
+# Konfiguration starten
 # ============================================================
-
-# Option 1: Nur REST Server
-# java -jar "${JAR}" \
-#     -d ${DEVICE} \
-#     --rest \
-#     --http-port ${HTTP_PORT} \
-#     --poll-interval ${POLL_INTERVAL}
-
-# Option 2: REST + MQTT (empfohlen)
-java -jar "${JAR}" \
-    -d ${DEVICE} \
-    --rest \
-    --http-port ${HTTP_PORT} \
-    --poll-interval ${POLL_INTERVAL} \
-    --mqtt \
-    --mqtt-broker ${MQTT_BROKER} \
-    --mqtt-port ${MQTT_PORT} \
-    --mqtt-user ${MQTT_USER} \
-    --mqtt-password ${MQTT_PASSWORD} \
-    --mqtt-topic ${MQTT_TOPIC} \
-    --verbose
-
-# Option 3: Nur einmal auslesen
-# java -jar "${JAR}" -d ${DEVICE}
-
-# Option 4: Einmal auslesen + MQTT
-# java -jar "${JAR}" \
-#     -d ${DEVICE} \
-#     --mqtt \
-#     --mqtt-broker ${MQTT_BROKER} \
-#     --mqtt-user ${MQTT_USER} \
-#     --mqtt-password ${MQTT_PASSWORD}
+if [ -f "${CONFIG}" ] && [ "${mqtt_enabled}" = "true" ]; then
+    # Option 1: REST + MQTT (laut config.properties)
+    java -jar "${JAR}" \
+        --rest \
+        --mqtt \
+        --verbose
+else
+    # Option 2: Nur REST Server (Standard)
+    java -jar "${JAR}" \
+        --rest \
+        --verbose
+fi

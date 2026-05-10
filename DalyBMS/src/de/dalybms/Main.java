@@ -7,56 +7,51 @@ public class Main {
     private static final Logger logger = Logger.getLogger("DalyBMS");
 
     public static void main(String[] args) {
-        // ==================== Konfiguration ====================
-        String serialDevice = "/dev/ttyUSB0";
-        String mqttBroker = "192.168.20.100";
-        int mqttPort = 1883;
-        String mqttUser = "dalybms";
-        String mqttPassword = "eveakku";
-        String mqttTopic = "daly_bms";
-        boolean useMqtt = false;
-        boolean useRest = false;
-        int httpPort = 8080;
-        int pollInterval = 30;  // Sekunden
-        boolean verbose = false;
+        // ==================== Konfiguration laden ====================
+        Config config = new Config();
+        String configFile = null;
 
-        // ==================== Argumente parsen ====================
+        // ==================== Argumente parsen (überschreiben Config) ====================
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
+                case "--config":
+                    configFile = args[++i];
+                    config = new Config(configFile);
+                    break;
                 case "-d":
                 case "--device":
-                    serialDevice = args[++i];
+                    config.override("serial.device", args[++i]);
                     break;
                 case "--mqtt":
-                    useMqtt = true;
+                    config.override("mqtt.enabled", "true");
                     break;
                 case "--mqtt-broker":
-                    mqttBroker = args[++i];
+                    config.override("mqtt.broker", args[++i]);
                     break;
                 case "--mqtt-port":
-                    mqttPort = Integer.parseInt(args[++i]);
+                    config.override("mqtt.port", args[++i]);
                     break;
                 case "--mqtt-user":
-                    mqttUser = args[++i];
+                    config.override("mqtt.username", args[++i]);
                     break;
                 case "--mqtt-password":
-                    mqttPassword = args[++i];
+                    config.override("mqtt.password", args[++i]);
                     break;
                 case "--mqtt-topic":
-                    mqttTopic = args[++i];
+                    config.override("mqtt.topic", args[++i]);
                     break;
                 case "--rest":
-                    useRest = true;
+                    // REST ist implizit immer aktiv, --rest nur für Kompatibilität
                     break;
                 case "--http-port":
-                    httpPort = Integer.parseInt(args[++i]);
+                    config.override("http.port", args[++i]);
                     break;
                 case "--poll-interval":
-                    pollInterval = Integer.parseInt(args[++i]);
+                    config.override("http.poll_interval_seconds", args[++i]);
                     break;
                 case "--verbose":
                 case "-v":
-                    verbose = true;
+                    config.override("verbose", "true");
                     break;
                 case "--help":
                 case "-h":
@@ -65,59 +60,55 @@ public class Main {
             }
         }
 
-        setupLogging(verbose);
+        setupLogging(config.isVerbose());
+
+        // Zeige Konfiguration
+        config.print();
 
         // ==================== BMS verbinden ====================
-        DalyBMS bms = new DalyBMS();
+        DalyBMS bms = new DalyBMS(
+                config.getSerialRequestRetries(),
+                config.getSerialAddress()
+        );
+
         try {
-            logger.info("Verbinde mit BMS an " + serialDevice + "...");
-            bms.connect(serialDevice);
+            logger.info("Verbinde mit BMS an " + config.getSerialDevice() + "...");
+            bms.connect(config.getSerialDevice());
         } catch (Exception e) {
             logger.severe("BMS-Verbindung fehlgeschlagen: " + e.getMessage());
             System.exit(1);
         }
 
-     // ==================== REST Server Modus ====================
-        if (useRest) {
-            try {
-                BmsRestServer restServer = new BmsRestServer(bms, httpPort);
-                restServer.start();
-
-                logger.info("Server läuft. Beenden mit Ctrl+C");
-                Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                    logger.info("Server wird beendet...");
-                    restServer.stop();
-                    bms.disconnect();
-                }));
-
-                Thread.currentThread().join();
-
-            } catch (Exception e) {
-                logger.severe("REST Server Fehler: " + e.getMessage());
-                e.printStackTrace();
-                bms.disconnect();
-                System.exit(1);
-            }
+        // ==================== REST Server + MQTT Modus ====================
+        if (config.isMqttEnabled()) {
+            // Starte MQTT im Hintergrund
+            startMqttLoop(bms,
+                    config.getMqttBroker(),
+                    config.getMqttPort(),
+                    config.getMqttUsername(),
+                    config.getMqttPassword(),
+                    config.getMqttTopic(),
+                    config.getPollIntervalSeconds());
         }
-        // ==================== Einmal-Modus (wie vorher) ====================
-        else {
-            try {
-                DalyBMSData data = bms.getAll();
-                System.out.println(data.toString());
 
-                if (useMqtt) {
-                    MqttPublisher mqtt = new MqttPublisher(
-                            mqttBroker, mqttPort, mqttUser, mqttPassword, mqttTopic);
-                    mqtt.connect();
-                    mqtt.publishAll(data);
-                    mqtt.disconnect();
-                }
-            } catch (Exception e) {
-                logger.severe("Fehler: " + e.getMessage());
-                e.printStackTrace();
-            } finally {
+        try {
+            BmsRestServer restServer = new BmsRestServer(bms, config.getHttpPort());
+            restServer.start();
+
+            logger.info("Server läuft. Beenden mit Ctrl+C");
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                logger.info("Server wird beendet...");
+                restServer.stop();
                 bms.disconnect();
-            }
+            }));
+
+            Thread.currentThread().join();
+
+        } catch (Exception e) {
+            logger.severe("REST Server Fehler: " + e.getMessage());
+            e.printStackTrace();
+            bms.disconnect();
+            System.exit(1);
         }
     }
 
@@ -152,16 +143,14 @@ public class Main {
         System.out.println("Daly BMS CLI + REST Server (Java)");
         System.out.println("===================================");
         System.out.println();
-        System.out.println("Modi:");
-        System.out.println("  (Standard)     Einmal auslesen und beenden");
-        System.out.println("  --rest         REST Server starten (läuft dauerhaft)");
-        System.out.println("  --mqtt         Daten per MQTT senden");
-        System.out.println("  --rest --mqtt  Beides gleichzeitig");
+        System.out.println("Konfiguration:");
+        System.out.println("  --config <pfad>     Alternative config.properties laden");
         System.out.println();
-        System.out.println("Optionen:");
+        System.out.println("Optionen (überschreiben config.properties):");
         System.out.println("  -d, --device        Serielles Gerät (Standard: /dev/ttyUSB0)");
         System.out.println("  --http-port         HTTP Port (Standard: 8080)");
         System.out.println("  --poll-interval     Abfrage-Intervall in Sekunden (Standard: 30)");
+        System.out.println("  --mqtt              MQTT aktivieren");
         System.out.println("  --mqtt-broker       MQTT Broker (Standard: 192.168.20.100)");
         System.out.println("  --mqtt-port         MQTT Port (Standard: 1883)");
         System.out.println("  --mqtt-user         MQTT Benutzername");
@@ -169,6 +158,16 @@ public class Main {
         System.out.println("  --mqtt-topic        MQTT Topic (Standard: daly_bms)");
         System.out.println("  -v, --verbose       Ausführliche Ausgabe");
         System.out.println("  -h, --help          Diese Hilfe anzeigen");
+        System.out.println();
+        System.out.println("Beispiele:");
+        System.out.println("  # REST Server (Standard):");
+        System.out.println("  java -jar DalyBMS.jar");
+        System.out.println();
+        System.out.println("  # REST + MQTT:");
+        System.out.println("  java -jar DalyBMS.jar --mqtt");
+        System.out.println();
+        System.out.println("  # Mit anderer config-Datei:");
+        System.out.println("  java -jar DalyBMS.jar --config /pfad/zu/config.properties");
     }
 
     private static void setupLogging(boolean verbose) {
