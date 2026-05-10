@@ -388,7 +388,7 @@ public class BmsRestServer {
             sendError(exchange, 405, "Nur PUT erlaubt");
             return false;
         }
-        return false;
+        return true;
     }
 
     private String readRequestBody(HttpExchange exchange) throws IOException {
