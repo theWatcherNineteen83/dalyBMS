@@ -16,6 +16,7 @@ Java-basierter BMS-Monitor für Daly Batterie-Management-Systeme. Liest das BMS 
 
 - **Java 11+** (getestet mit OpenJDK 21)
 - **Daly BMS** mit seriellem Anschluss (USB-RS485 oder UART-Bluetooth)
+- **JK-BMS** (PB-Serie, optional) über RS485/Modbus RTU an einem zweiten USB-Adapter (2x möglich, Slave-Adressen 1..247)
 - **MQTT Broker** (optional, z.B. Mosquitto, Home Assistant)
 
 ## Schnellstart
@@ -92,6 +93,9 @@ java -jar dist/DalyBMS.jar --help
 | `/api/status` | BMS-Status (Zellen, Zyklen, Ladegerät/Last) |
 | `/api/errors` | Fehlerliste |
 | `/api/health` | Health-Check (kein BMS-Zugriff) |
+| `/api/jk/1` | JK-BMS 1 (alle Daten, getrennte Quelle) |
+| `/api/jk/2` | JK-BMS 2 (alle Daten, getrennte Quelle) |
+| `/api/jk/all` | beide JK-BMS zusammen (getrennt) |
 | `/swagger/` | Swagger-UI |
 | `/swagger/openapi.yaml` | OpenAPI-Spezifikation |
 

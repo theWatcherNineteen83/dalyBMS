@@ -39,13 +39,32 @@ public class BmsRestServer {
     // Lock für serielle Kommunikation
     private final Object bmsLock = new Object();
 
+    // JK-BMS (optional, bis zu 2 an einem zweiten Bus)
+    private final JkBMS jkBms1;
+    private final JkBMS jkBms2;
+    // Gecachte JK-Daten
+    private volatile DalyBMSData jk1Cached;
+    private volatile DalyBMSData jk2Cached;
+    private volatile String jk1LastUpdate = "never";
+    private volatile String jk2LastUpdate = "never";
+    private volatile String jk1LastError = null;
+    private volatile String jk2LastError = null;
+
     /**
      * Konstruktor ohne MQTT
      */
     public BmsRestServer(DalyBMS bms, int httpPort, boolean readOnly) {
+        this(bms, httpPort, readOnly, null, null);
+    }
+
+    /** Konstruktor mit optionalen JK-BMS-Instanzen (getrennte Datenquellen). */
+    public BmsRestServer(DalyBMS bms, int httpPort, boolean readOnly,
+                         JkBMS jkBms1, JkBMS jkBms2) {
         this.bms = bms;
         this.httpPort = httpPort;
         this.readOnly = readOnly;
+        this.jkBms1 = jkBms1;
+        this.jkBms2 = jkBms2;
     }
 
     /**
@@ -61,6 +80,8 @@ public class BmsRestServer {
         this.mqtt = new MqttPublisher(mqttBroker, mqttPort,
                 mqttUser, mqttPassword, mqttTopic);
         this.mqttEnabled = true;
+        this.jkBms1 = null;
+        this.jkBms2 = null;
     }
 
     /**
@@ -97,6 +118,11 @@ public class BmsRestServer {
         server.createContext("/api/errors", new ErrorsHandler());
         server.createContext("/api/health", new HealthHandler());
 
+        // ==================== JK-BMS GET Endpunkte (getrennte Datenquellen) ====================
+        server.createContext("/api/jk/1", new Jk1Handler());
+        server.createContext("/api/jk/2", new Jk2Handler());
+        server.createContext("/api/jk/all", new JkAllHandler());
+
         // ==================== REST PUT Endpunkte (Steuerung) ====================
         server.createContext("/api/set/discharge-mosfet", new SetDischargeMosfetHandler());
         server.createContext("/api/set/charge-mosfet", new SetChargeMosfetHandler());
@@ -129,6 +155,12 @@ public class BmsRestServer {
         logger.info("  /api/status              - BMS Status");
         logger.info("  /api/errors              - Fehlermeldungen");
         logger.info("  /api/health              - Health Check");
+        if (jkBms1 != null || jkBms2 != null) {
+            logger.info("JK-BMS Endpunkte (getrennte Datenquellen):");
+            logger.info("  /api/jk/1                - JK-BMS 1 (alle Daten)");
+            logger.info("  /api/jk/2                - JK-BMS 2 (alle Daten)");
+            logger.info("  /api/jk/all              - beide JK-BMS zusammen");
+        }
         logger.info("----------------------------------------------");
         logger.info("PUT Endpunkte:");
         logger.info("  /api/set/discharge-mosfet  - Entlade-MOSFET schalten");
@@ -338,6 +370,59 @@ public class BmsRestServer {
     }
 
     // ==================== HTTP Hilfsmethoden ====================
+
+    /**
+     * Rendert die Daten eines JK-BMS (SOC, Spannung, Strom, Zellen, Fehler)
+     * in den Dashboard-HTML-StringBuilder.
+     */
+    private void appendJkHtml(StringBuilder html, DalyBMSData data, String update) {
+        if (data == null) {
+            html.append("<p class='error'>Keine Daten vom JK-BMS (noch nicht abgefragt)</p>");
+            return;
+        }
+        html.append("<div class='update-info'>Abgefragt: ").append(update).append("</div>");
+        if (data.soc != null) {
+            html.append("<div class='big-value'>")
+                    .append(data.soc.socPercent).append(" %</div>");
+            html.append("<table>");
+            html.append("<tr><th>Gesamtspannung</th><td class='value'>")
+                    .append(data.soc.totalVoltage).append(" V</td></tr>");
+            html.append("<tr><th>Strom</th><td class='value'>")
+                    .append(data.soc.current).append(" A</td></tr>");
+            html.append("<tr><th>Ladezustand</th><td class='value'>")
+                    .append(data.soc.socPercent).append(" %</td></tr>");
+            html.append("</table>");
+        }
+        if (data.cellVoltages != null && !data.cellVoltages.isEmpty()) {
+            html.append("<h2 style='margin-top:10px'>&#128267; Zellspannungen</h2>");
+            html.append("<table>");
+            html.append("<tr><th>Zelle</th><th>Spannung</th></tr>");
+            for (java.util.Map.Entry<Integer, Double> e : data.cellVoltages.entrySet()) {
+                html.append("<tr><td>Zelle ").append(e.getKey())
+                        .append("</td><td class='value'>").append(e.getValue())
+                        .append(" V</td></tr>");
+            }
+            html.append("</table>");
+        }
+        if (data.temperatures != null && !data.temperatures.isEmpty()) {
+            html.append("<h2 style='margin-top:10px'>&#127777; Temperaturen</h2>");
+            html.append("<table>");
+            for (java.util.Map.Entry<Integer, Integer> e : data.temperatures.entrySet()) {
+                html.append("<tr><td>Sensor ").append(e.getKey())
+                        .append("</td><td class='value'>").append(e.getValue())
+                        .append(" &deg;C</td></tr>");
+            }
+            html.append("</table>");
+        }
+        if (data.errors != null && !data.errors.isEmpty()) {
+            html.append("<h2 class='error' style='margin-top:10px'>&#9888; Fehler</h2>");
+            html.append("<table>");
+            for (String err : data.errors) {
+                html.append("<tr><td class='error'>&#9888; ").append(err).append("</td></tr>");
+            }
+            html.append("</table>");
+        }
+    }
 
     private void sendJsonResponse(HttpExchange exchange, int statusCode,
                                   String json) throws IOException {
@@ -604,6 +689,16 @@ public class BmsRestServer {
                         .append("&#128260; Erneut versuchen</button>");
             }
 
+            // ==================== JK-BMS Anzeigen ====================
+            if (jkBms1 != null) {
+                html.append("<h2>&#128267; JK-BMS 1 (Akku 1)</h2>");
+                appendJkHtml(html, fetchJk(1), jk1LastUpdate);
+            }
+            if (jkBms2 != null) {
+                html.append("<h2>&#128267; JK-BMS 2 (Akku 2)</h2>");
+                appendJkHtml(html, fetchJk(2), jk2LastUpdate);
+            }
+
             // MQTT Status Anzeige
             html.append("<h2>&#128225; Verbindungen</h2>");
             html.append("<table>");
@@ -827,6 +922,120 @@ public class BmsRestServer {
     /**
      * GET /api/health - Health Check (kein BMS-Zugriff nötig)
      */
+    // ====================================================================
+    // JK-BMS Abfrage (getrennte Datenquellen, eigene Sperre)
+    // ====================================================================
+
+    private DalyBMSData fetchJk(int which) {
+        JkBMS jk = (which == 1) ? jkBms1 : jkBms2;
+        if (jk == null) {
+            return null;
+        }
+        synchronized (jk) {
+            try {
+                DalyBMSData d = jk.getAll();
+                if (which == 1) {
+                    jk1Cached = d;
+                    jk1LastUpdate = java.time.LocalDateTime.now()
+                            .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+                    jk1LastError = null;
+                } else {
+                    jk2Cached = d;
+                    jk2LastUpdate = java.time.LocalDateTime.now()
+                            .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+                    jk2LastError = null;
+                }
+                return d;
+            } catch (Exception e) {
+                if (which == 1) {
+                    jk1LastError = e.getMessage();
+                    return jk1Cached;
+                } else {
+                    jk2LastError = e.getMessage();
+                    return jk2Cached;
+                }
+            }
+        }
+    }
+
+    /**
+     * GET /api/jk/1 - JK-BMS 1 (alle Daten)
+     */
+    class Jk1Handler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkGetMethod(exchange)) return;
+            if (jkBms1 == null) {
+                sendError(exchange, 404, "JK-BMS 1 nicht konfiguriert (jk.enabled=false)");
+                return;
+            }
+            DalyBMSData data = fetchJk(1);
+            if (data == null) {
+                sendError(exchange, 503, "JK-BMS 1 Daten nicht verfuegbar: " + jk1LastError);
+                return;
+            }
+            JSONObject json = data.toJson();
+            json.put("bms", "jk-1");
+            json.put("last_update", jk1LastUpdate);
+            if (jk1LastError != null) json.put("warning", jk1LastError);
+            sendJsonResponse(exchange, 200, json.toString(2));
+        }
+    }
+
+    /**
+     * GET /api/jk/2 - JK-BMS 2 (alle Daten)
+     */
+    class Jk2Handler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkGetMethod(exchange)) return;
+            if (jkBms2 == null) {
+                sendError(exchange, 404, "JK-BMS 2 nicht konfiguriert (jk.enabled=false)");
+                return;
+            }
+            DalyBMSData data = fetchJk(2);
+            if (data == null) {
+                sendError(exchange, 503, "JK-BMS 2 Daten nicht verfuegbar: " + jk2LastError);
+                return;
+            }
+            JSONObject json = data.toJson();
+            json.put("bms", "jk-2");
+            json.put("last_update", jk2LastUpdate);
+            if (jk2LastError != null) json.put("warning", jk2LastError);
+            sendJsonResponse(exchange, 200, json.toString(2));
+        }
+    }
+
+    /**
+     * GET /api/jk/all - beide JK-BMS zusammen (getrennt)
+     */
+    class JkAllHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkGetMethod(exchange)) return;
+            JSONObject json = new JSONObject();
+            json.put("count", (jkBms1 != null ? 1 : 0) + (jkBms2 != null ? 1 : 0));
+            if (jkBms1 != null) {
+                JSONObject one = new JSONObject();
+                one.put("available", true);
+                one.put("last_update", jk1LastUpdate);
+                one.put("error", jk1LastError == null ? JSONObject.NULL : jk1LastError);
+                DalyBMSData d1 = fetchJk(1);
+                one.put("data", d1 != null ? d1.toJson() : JSONObject.NULL);
+                json.put("jk1", one);
+            }
+            if (jkBms2 != null) {
+                JSONObject two = new JSONObject();
+                two.put("available", true);
+                two.put("last_update", jk2LastUpdate);
+                two.put("error", jk2LastError == null ? JSONObject.NULL : jk2LastError);
+                DalyBMSData d2 = fetchJk(2);
+                two.put("data", d2 != null ? d2.toJson() : JSONObject.NULL);
+                json.put("jk2", two);
+            }
+            sendJsonResponse(exchange, 200, json.toString(2));
+        }
+    }
     class HealthHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {

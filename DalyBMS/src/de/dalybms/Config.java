@@ -45,6 +45,12 @@ public class Config {
         props.setProperty("serial.write_timeout_ms", "2000");
         props.setProperty("serial.request_retries", "5");
         props.setProperty("serial.address", "4");
+        // --- JK-BMS (Modbus RTU, optional; 2x an einem zweiten USB/RS485-Bus) ---
+        props.setProperty("jk.enabled", "false");
+        props.setProperty("jk.device", "/dev/ttyUSB1");
+        props.setProperty("jk.baudrate", "115200");
+        props.setProperty("jk.slave_id_1", "1");
+        props.setProperty("jk.slave_id_2", "2");
         props.setProperty("http.port", "8080");
         props.setProperty("http.poll_interval_seconds", "30");
         props.setProperty("mqtt.enabled", "false");
@@ -159,6 +165,26 @@ public class Config {
         return Integer.parseInt(props.getProperty("serial.address"));
     }
 
+    public boolean isJkEnabled() {
+        return Boolean.parseBoolean(props.getProperty("jk.enabled"));
+    }
+
+    public String getJkDevice() {
+        return props.getProperty("jk.device");
+    }
+
+    public int getJkBaudrate() {
+        return Integer.parseInt(props.getProperty("jk.baudrate"));
+    }
+
+    public int getJkSlaveId1() {
+        return Integer.parseInt(props.getProperty("jk.slave_id_1"));
+    }
+
+    public int getJkSlaveId2() {
+        return Integer.parseInt(props.getProperty("jk.slave_id_2"));
+    }
+
     public int getHttpPort() {
         return Integer.parseInt(props.getProperty("http.port"));
     }
@@ -223,6 +249,12 @@ public class Config {
         System.out.printf("  MQTT Topic:           %s%n", getMqttTopic());
         System.out.printf("  Read-Only:            %s%n", isReadOnly() ? "JA (--read-write zum Entsperren)" : "NEIN (Schreibzugriff aktiv)");
         System.out.printf("  Verbose:              %s%n", isVerbose());
+        if (isJkEnabled()) {
+            System.out.printf("  JK-BMS:               aktiv (%s @ %d Baud, Slaves %d+%d)%n",
+                    getJkDevice(), getJkBaudrate(), getJkSlaveId1(), getJkSlaveId2());
+        } else {
+            System.out.println("  JK-BMS:               deaktiviert");
+        }
         System.out.println("══════════════════════════════════════");
     }
 }

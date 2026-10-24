@@ -82,6 +82,30 @@ public class Main {
             System.exit(1);
         }
 
+        // ==================== JK-BMS verbinden (optional) ====================
+        // 2x JK-BMS an einem zweiten USB/RS485-Bus (Modbus RTU, eigene Slave-Adressen)
+        JkBMS jkBms1 = null;
+        JkBMS jkBms2 = null;
+        if (config.isJkEnabled()) {
+            try {
+                logger.info("Verbinde mit JK-BMS 1 (Slave " + config.getJkSlaveId1()
+                        + ") an " + config.getJkDevice() + "...");
+                jkBms1 = new JkBMS(config.getJkSlaveId1());
+                jkBms1.connect(config.getJkDevice());
+
+                logger.info("Verbinde mit JK-BMS 2 (Slave " + config.getJkSlaveId2()
+                        + ") an " + config.getJkDevice() + "...");
+                jkBms2 = new JkBMS(config.getJkSlaveId2());
+                jkBms2.connect(config.getJkDevice());
+            } catch (Exception e) {
+                logger.severe("JK-BMS Verbindung fehlgeschlagen: " + e.getMessage());
+                logger.severe("Starte ohne JK-BMS weiter.");
+                // JK nicht blockierend: bei Fehler ohne JK weiterlaufen lassen
+                jkBms1 = null;
+                jkBms2 = null;
+            }
+        }
+
         // ==================== REST Server + MQTT Modus ====================
         if (config.isMqttEnabled()) {
             // Starte MQTT im Hintergrund
@@ -94,8 +118,10 @@ public class Main {
                     config.getPollIntervalSeconds());
         }
 
+        final JkBMS jk1 = jkBms1;
+        final JkBMS jk2 = jkBms2;
         try {
-            BmsRestServer restServer = new BmsRestServer(bms, config.getHttpPort(), config.isReadOnly());
+            BmsRestServer restServer = new BmsRestServer(bms, config.getHttpPort(), config.isReadOnly(), jk1, jk2);
             restServer.start();
 
             logger.info("Server läuft. Beenden mit Ctrl+C");
@@ -103,6 +129,8 @@ public class Main {
                 logger.info("Server wird beendet...");
                 restServer.stop();
                 bms.disconnect();
+                if (jk1 != null) jk1.disconnect();
+                if (jk2 != null) jk2.disconnect();
             }));
 
             Thread.currentThread().join();
