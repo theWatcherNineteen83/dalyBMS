@@ -40,6 +40,21 @@ public class Main {
                 case "--mqtt-topic":
                     config.override("mqtt.topic", args[++i]);
                     break;
+                case "--jk":
+                    config.override("jk.enabled", "true");
+                    break;
+                case "--jk-device":
+                    config.override("jk.device", args[++i]);
+                    break;
+                case "--jk-baudrate":
+                    config.override("jk.baudrate", args[++i]);
+                    break;
+                case "--jk-slave1":
+                    config.override("jk.slave_id_1", args[++i]);
+                    break;
+                case "--jk-slave2":
+                    config.override("jk.slave_id_2", args[++i]);
+                    break;
                 case "--rest":
                     // REST ist implizit immer aktiv, --rest nur für Kompatibilität
                     break;
@@ -187,6 +202,10 @@ public class Main {
         System.out.println("  --mqtt-password     MQTT Passwort");
         System.out.println("  --mqtt-topic        MQTT Topic (Standard: daly_bms)");
         System.out.println("  --read-write        Schreibzugriff erlauben (MOSFET, SOC)");
+        System.out.println("  --jk                JK-BMS aktivieren (2x am zweiten Bus)");
+        System.out.println("  --jk-device         JK-BMS Bus (by-path-Pfad empfohlen)");
+        System.out.println("  --jk-slave1         Modbus-Adresse JK-BMS 1 (Standard: 1)");
+        System.out.println("  --jk-slave2         Modbus-Adresse JK-BMS 2 (Standard: 2)");
         System.out.println("  -v, --verbose       Ausführliche Ausgabe");
         System.out.println("  -h, --help          Diese Hilfe anzeigen");
         System.out.println();
