@@ -1,0 +1,10 @@
+# Zeilenenden kuenftig immer LF erzwingen (verhindert CRLF-Probleme beim Klonen auf dem Orange Pi)
+* text=auto
+*.sh text eol=lf
+*.java text eol=lf
+*.properties text eol=lf
+*.mk text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.bat text eol=crlf
