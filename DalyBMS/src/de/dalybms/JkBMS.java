@@ -216,12 +216,14 @@ public class JkBMS extends DalyBMS {
     }
 
     private DalyBMSData.SOC decodeSoc() {
-        // Empirisch ermittelt aus Hex-Dump (JK-BMS PB-Serie, 8S):
-        //   Gesamtspannung: u32 @ 0xD2 (210) in mV
-        //   SOC          : u8  @ 0xE7 (231) in %
-        //   Strom        : s32 @ 0xE9 (233) in mA
+        // Empirisch ermittelt aus Hex-Dump + CSV-Referenz (JK-BMS PB-Serie, 8S):
+        //   Gesamtspannung : u32 @ 0xD2 (210) in mV   -> 26,435 V  (CSV: 26,43 V)
+        //   Strom         : s32 @ 0xD4 (212) in mA   -> 0 A       (CSV: 0,00 A Ruhe)
+        //   SOC           : u8  @ 0xE7 (231) in %    -> 83 %
+        //   Restkapazitaet: u32 @ 0xE9 (233) in mAh  -> 259,10 Ah (CSV)
+        //   Vollkapazitaet: u32 @ 0xED (237) in mAh  -> 314,00 Ah (CSV)
         double totalVoltage = round(u32(210) / 1000.0, 3);
-        double current = round(s32(233) / 1000.0, 3);
+        double current = round(s32(212) / 1000.0, 3);
         double soc = u8(231);
         return new DalyBMSData.SOC(totalVoltage, current, soc);
     }
@@ -240,18 +242,19 @@ public class JkBMS extends DalyBMS {
 
     private Map<Integer, Integer> decodeTemperatures() {
         Map<Integer, Integer> temps = new LinkedHashMap<>();
-        // Batterie-Sensoren 1..5 (Einheit 0,1 °C), Sensor 0 = MOSFET/Leistungsteil
-        int[] offsets = {156, 158, 248, 250, 252};
-        for (int i = 0; i < offsets.length; i++) {
-            int raw = s16(offsets[i]);
-            boolean plausible = raw > -400 && raw < 1500;
-            // Sensor 1 und 2 immer zeigen, 3..5 nur wenn plausibel und nicht 0 (nicht bestückt)
-            if (plausible && (i < 2 || raw != 0)) {
-                temps.put(i + 1, (int) Math.round(raw / 10.0));
-            }
+        // JK-BMS PB-Serie: Max Temp @ 0xDC, Min Temp @ 0xDE (je u16, 0,1 °C), Temp MOS @ 0xE5?
+        // Empirisch: 0xDC=0xB8=184 -> 18,4 °C (CSV Max=18), 0xDE=0xB6=182 -> 18,2 °C (CSV Min=18)
+        int maxRaw = u16(220);   // 0xDC
+        int minRaw = u16(222);   // 0xDE
+        if (maxRaw > 0 && maxRaw < 1500) {
+            temps.put(1, (int) Math.round(maxRaw / 10.0));
         }
-        int mos = s16(138);
-        if (mos > -400 && mos < 1500) {
+        if (minRaw > 0 && minRaw < 1500) {
+            temps.put(2, (int) Math.round(minRaw / 10.0));
+        }
+        // MOS-Temperatur (im CSV 19 °C), liegt in der Naehe, 0xC5=197 -> 19,7 °C
+        int mos = u16(197);      // 0xC5
+        if (mos > 0 && mos < 1500) {
             temps.put(0, (int) Math.round(mos / 10.0));
         }
         tempSensorCount = temps.size();
