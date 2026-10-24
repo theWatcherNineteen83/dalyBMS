@@ -428,6 +428,20 @@ public class JkBMS extends DalyBMS {
         return sb.toString().trim();
     }
 
+    /** Gibt den kompletten 256-Byte-Puffer als Hex-Dump aus (16 Bytes/Zeile mit Offset). */
+    private void dump() {
+        for (int row = 0; row < buf.length; row += 16) {
+            StringBuilder hex = new StringBuilder();
+            StringBuilder asc = new StringBuilder();
+            for (int i = row; i < row + 16 && i < buf.length; i++) {
+                int b = buf[i] & 0xFF;
+                hex.append(String.format("%02X ", b));
+                asc.append(b >= 32 && b < 127 ? (char) b : '.');
+            }
+            System.out.println(String.format("%04X  %-48s  %s", row, hex, asc));
+        }
+    }
+
     /**
      * Schnelltest direkt am BMS:
      *   java -cp ... de.dalybms.JkBMS /dev/ttyUSB0 [slave]
@@ -441,11 +455,9 @@ public class JkBMS extends DalyBMS {
         bms.connect(device);
         try {
             DalyBMSData data = bms.getAll();
-            System.out.println("Roh Zellen 1-4        : " + bms.hex(0, 8));
-            System.out.println("Roh Gesamtspannung    : " + bms.hex(144, 4));
-            System.out.println("Roh Leistung          : " + bms.hex(148, 4));
-            System.out.println("Roh Strom             : " + bms.hex(152, 4));
-            System.out.println("Roh Balance/SOC       : " + bms.hex(166, 2));
+            System.out.println("===== Voller Hex-Dump (256 Byte) =====");
+            bms.dump();
+            System.out.println("======================================");
             System.out.println(data);
         } finally {
             bms.disconnect();
