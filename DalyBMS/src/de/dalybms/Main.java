@@ -95,8 +95,7 @@ public class Main {
 
                 logger.info("Verbinde mit JK-BMS 2 (Slave " + config.getJkSlaveId2()
                         + ") an " + config.getJkDevice() + "...");
-                jkBms2 = new JkBMS(config.getJkSlaveId2());
-                jkBms2.connect(config.getJkDevice());
+                jkBms2 = new JkBMS(config.getJkSlaveId2(), jkBms1);
             } catch (Exception e) {
                 logger.severe("JK-BMS Verbindung fehlgeschlagen: " + e.getMessage());
                 logger.severe("Starte ohne JK-BMS weiter.");

@@ -36,6 +36,10 @@ public class JkBMS extends DalyBMS {
 
     private final int slaveId;
     private SerialPort port;
+    /** Gemeinsame Sperre fuer den Modbus-Bus (bei mehreren JkBMS am selben Port). */
+    private final Object busLock;
+    /** true, wenn dieser JkBMS den Port selbst geoeffnet hat (Owner des Busses). */
+    private final boolean ownsPort;
 
     /** Letzter Rohdatenpuffer (Offset 0..255), für Diagnose */
     private final byte[] buf = new byte[BLOCK_BYTES * 2];
@@ -46,6 +50,20 @@ public class JkBMS extends DalyBMS {
     public JkBMS(int slaveId) {
         super();
         this.slaveId = slaveId;
+        this.busLock = new Object();
+        this.ownsPort = true;
+    }
+
+    /**
+     * Shared-Bus-Konstruktor: nutzt den bereits geoeffneten Port und die Sperre
+     * eines anderen JkBMS am selben RS485-Bus (fuer mehrere Slaves an einem USB-Adapter).
+     */
+    public JkBMS(int slaveId, JkBMS busOwner) {
+        super();
+        this.slaveId = slaveId;
+        this.port = busOwner.port;
+        this.busLock = busOwner.busLock;
+        this.ownsPort = false;
     }
 
     public JkBMS() {
@@ -56,6 +74,10 @@ public class JkBMS extends DalyBMS {
 
     @Override
     public void connect(String device) throws IOException {
+        if (!ownsPort && port != null && port.isOpen()) {
+            logger.info("JK-BMS (Slave " + slaveId + ") nutzt geteilten Bus " + port.getSystemPortName());
+            return;
+        }
         port = SerialPort.getCommPort(device);
         port.setBaudRate(115200);
         port.setNumDataBits(8);
@@ -72,7 +94,7 @@ public class JkBMS extends DalyBMS {
 
     @Override
     public void disconnect() {
-        if (port != null && port.isOpen()) {
+        if (ownsPort && port != null && port.isOpen()) {
             port.closePort();
             logger.info("JK-BMS Verbindung getrennt");
         }
@@ -97,6 +119,12 @@ public class JkBMS extends DalyBMS {
 
     /** Liest 'count' Register ab Adresse 'reg' und liefert die reinen Datenbytes. */
     private byte[] readRegisters(int reg, int count) throws IOException {
+        synchronized (busLock) {
+            return readRegistersLocked(reg, count);
+        }
+    }
+
+    private byte[] readRegistersLocked(int reg, int count) throws IOException {
         byte[] req = new byte[8];
         req[0] = (byte) slaveId;
         req[1] = 0x03;
