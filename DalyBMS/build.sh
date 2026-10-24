@@ -34,7 +34,7 @@ echo ""
 # ---- Abhängigkeiten prüfen ----
 echo "[2/7] Abhängigkeiten prüfen..."
 MISSING=0
-for jar in jSerialComm-2.10.4.jar org.eclipse.paho.client.mqttv3-1.2.5.jar json-20231013.jar; do
+for jar in jSerialComm-2.11.4.jar org.eclipse.paho.client.mqttv3-1.2.6-20201211.050620-2.jar json-20251224.jar; do
     if [ ! -f "${LIB_DIR}/${jar}" ]; then
         echo "  FEHLT: lib/${jar}"
         MISSING=1
@@ -50,14 +50,14 @@ if [ $MISSING -eq 1 ]; then
     if [ "$answer" = "j" ] || [ "$answer" = "J" ]; then
         mkdir -p "${LIB_DIR}"
         echo "Lade jSerialComm..."
-        wget -q -O "${LIB_DIR}/jSerialComm-2.10.4.jar" \
-            "https://repo1.maven.org/maven2/com/fazecast/jSerialComm/2.10.4/jSerialComm-2.10.4.jar"
+        wget -q -O "${LIB_DIR}/jSerialComm-2.11.4.jar" \
+            "https://repo1.maven.org/maven2/com/fazecast/jSerialComm/2.11.4/jSerialComm-2.11.4.jar"
         echo "Lade Paho MQTT..."
-        wget -q -O "${LIB_DIR}/org.eclipse.paho.client.mqttv3-1.2.5.jar" \
+        wget -q -O "${LIB_DIR}/org.eclipse.paho.client.mqttv3-1.2.6-20201211.050620-2.jar" \
             "https://repo1.maven.org/maven2/org/eclipse/paho/org.eclipse.paho.client.mqttv3/1.2.5/org.eclipse.paho.client.mqttv3-1.2.5.jar"
         echo "Lade JSON..."
-        wget -q -O "${LIB_DIR}/json-20231013.jar" \
-            "https://repo1.maven.org/maven2/org/json/json/20231013/json-20231013.jar"
+        wget -q -O "${LIB_DIR}/json-20251224.jar" \
+            "https://repo1.maven.org/maven2/org/json/json/20251224/json-20251224.jar"
         echo "Alle Abhängigkeiten heruntergeladen!"
     else
         echo "Bitte lade die JARs manuell herunter."
@@ -118,7 +118,7 @@ MANIFEST_FILE="${OUT_DIR}/MANIFEST.MF"
 cat > "${MANIFEST_FILE}" << EOF
 Manifest-Version: 1.0
 Main-Class: ${MAIN_CLASS}
-Class-Path: lib/jSerialComm-2.10.4.jar lib/org.eclipse.paho.client.mqttv3-1.2.5.jar lib/json-20231013.jar
+Class-Path: lib/jSerialComm-2.11.4.jar lib/org.eclipse.paho.client.mqttv3-1.2.6-20201211.050620-2.jar lib/json-20251224.jar
 EOF
 
 cd "${OUT_DIR}"
