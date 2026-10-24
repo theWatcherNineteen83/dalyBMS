@@ -216,9 +216,13 @@ public class JkBMS extends DalyBMS {
     }
 
     private DalyBMSData.SOC decodeSoc() {
-        double totalVoltage = round(u32(144) / 1000.0, 3);   // mV -> V
-        double current = round(s32(152) / 1000.0, 3);        // mA -> A
-        double soc = u8(167);                                // %
+        // Empirisch ermittelt aus Hex-Dump (JK-BMS PB-Serie, 8S):
+        //   Gesamtspannung: u32 @ 0xD2 (210) in mV
+        //   SOC          : u8  @ 0xE7 (231) in %
+        //   Strom        : s32 @ 0xE9 (233) in mA
+        double totalVoltage = round(u32(210) / 1000.0, 3);
+        double current = round(s32(233) / 1000.0, 3);
+        double soc = u8(231);
         return new DalyBMSData.SOC(totalVoltage, current, soc);
     }
 
