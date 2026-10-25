@@ -51,7 +51,8 @@ public class JkBusScanner {
             byte[] req = new byte[8];
             req[0] = (byte) addr;
             req[1] = 0x03;
-            req[2] = 0x00;
+ //           req[2] = 0x00;
+            req[2] = 0x12;   // neu: liest Register 0x1200 (Zellspannung 0)
             req[3] = 0x00;
             req[4] = 0x00;
             req[5] = 0x01;
