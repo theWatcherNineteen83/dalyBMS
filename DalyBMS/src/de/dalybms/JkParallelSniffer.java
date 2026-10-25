@@ -358,38 +358,39 @@ public class JkParallelSniffer {
             }
         }
 
-        // HOST-Frame (Typ 02, 160+ Bytes) enthaelt DOCH weitere Felder
-        // (empirisch verifiziert gegen Rohdump 25.10.2026, Referenz SOC=57%):
-        //   Gesamtspannung : u16 LE @ 189 (mV)  -> 26385 = 26.39V
-        //   Temperatur     : u16 LE @ 203 (0.1C) -> 181 = 18.1C
-        //   SOC            : u8     @ 214 (%)    -> 0x39 = 57%
-        //   Restkapazitaet : u32 LE @ 215 (mAh)  -> 179610 = 179.6 Ah
-        //   Vollkapazitaet : u32 LE @ 219 (mAh)  -> 314000 = 314.0 Ah
+        // HOST-Frame (Typ 02, ~308 Bytes) enthaelt weitere Felder
+        // (empirisch verifiziert gegen Rohdump 25.10.2026, Referenz SOC=57%).
+        // Offsets RELATIV zum Frame-Start (55 AA EB 90 02 00):
+        //   Gesamtspannung : u16 LE @ 150 (mV)   -> 26385 = 26.39V
+        //   Temperatur     : u16 LE @ 168 (0.1C) -> 181 = 18.1C
+        //   SOC            : u8     @ 172 (%)    -> 0x39 = 57%
+        //   Restkapazitaet : u32 LE @ 174 (mAh)  -> 179610 = 179.6 Ah
+        //   Vollkapazitaet : u32 LE @ 178 (mAh)  -> 314000 = 314.0 Ah
         // Diese Offsets gelten nur fuer den HOST-Frame (Typ 02).
         if (frameType == TYPE_HOST) {
             // Gesamtspannung
-            if (len > 191) {
-                int v = u16le(data, offset + 189);
+            if (len > 152) {
+                int v = u16le(data, offset + 150);
                 if (v > 10000 && v < 60000) d.totalVoltageMv = v;
             }
             // Temperatur
-            if (len > 205) {
-                int t = u16le(data, offset + 203);
+            if (len > 170) {
+                int t = u16le(data, offset + 168);
                 if (t > 0 && t < 1000) d.temperatureRaw = t;
             }
             // SOC
-            if (len > 214) {
-                int soc = data[offset + 214] & 0xFF;
+            if (len > 172) {
+                int soc = data[offset + 172] & 0xFF;
                 if (soc > 0 && soc <= 100) d.socPercent = soc;
             }
             // Restkapazitaet
-            if (len > 219) {
-                long cap = u32le(data, offset + 215);
+            if (len > 178) {
+                long cap = u32le(data, offset + 174);
                 if (cap > 10000 && cap < 1000000) d.remainingCapacityMah = cap;
             }
             // Vollkapazitaet
-            if (len > 223) {
-                long full = u32le(data, offset + 219);
+            if (len > 182) {
+                long full = u32le(data, offset + 178);
                 if (full > 10000 && full < 1000000) d.fullCapacityMah = full;
             }
         }
