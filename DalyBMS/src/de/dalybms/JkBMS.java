@@ -216,15 +216,20 @@ public class JkBMS extends DalyBMS {
     }
 
     private DalyBMSData.SOC decodeSoc() {
-        // Empirisch ermittelt aus Hex-Dump + CSV-Referenz (JK-BMS PB-Serie, 8S):
-        //   Gesamtspannung : u32 @ 0xD2 (210) in mV   -> 26,435 V  (CSV: 26,43 V)
-        //   Strom         : s32 @ 0xD4 (212) in mA   -> 0 A       (CSV: 0,00 A Ruhe)
-        //   SOC           : u8  @ 0xE7 (231) in %    -> 83 %
-        //   Restkapazitaet: u32 @ 0xE9 (233) in mAh  -> 259,10 Ah (CSV)
-        //   Vollkapazitaet: u32 @ 0xED (237) in mAh  -> 314,00 Ah (CSV)
-        double totalVoltage = round(u32(210) / 1000.0, 3);
-        double current = round(s32(212) / 1000.0, 3);
-        double soc = u8(231);
+        // Empirisch verifiziert gegen Rohdump vom 25.10.2026 (JK-BMS PB-Serie, 8S):
+        //   Zellspannungen : u16 @ 0x00..0x3E in mV  -> korrekt (z.B. 0x0CE4 = 3300 mV)
+        //   SOC            : u8  @ 0xE7 (231) in %   -> 82 % (verifiziert)
+        //   Restkapazitaet : u32 @ 0xE8 (232) in mAh -> 258925 mAh = 258.9 Ah
+        //   Vollkapazitaet : u32 @ 0xEC (236) in mAh -> 314000 mAh = 314.0 Ah
+        //   Gesamtspannung : TODO - Offset unbekannt (0xD2 liefert Overflow, 0x90 liefert 0)
+        //   Strom          : TODO - Offset unbekannt (0xD4 und 0x98 liefern beide 0 in Ruhe)
+        //
+        // Hinweis: Offsets weichen vom offiziellen JK-BMS Modbus V1.0 PDF ab.
+        // Das PDF dokumentiert andere Adressen (BatVol@0x90, BatCurrent@0x98, SOC@0xA6),
+        // die auf dieser Firmware nicht zutreffen.
+        double totalVoltage = 0;  // TODO: korrektes Offset ermitteln (unter Last testen)
+        double current = 0;       // TODO: korrektes Offset ermitteln (unter Last testen)
+        double soc = u8(231);     // 0xE7 - verifiziert
         return new DalyBMSData.SOC(totalVoltage, current, soc);
     }
 
@@ -331,14 +336,14 @@ public class JkBMS extends DalyBMS {
         boolean discharging = u8(193) != 0;
         double current = d.soc.current;
         String mode = current > 0.05 ? "charging" : (current < -0.05 ? "discharging" : "stationary");
-        double capacityAh = round(s32(168) / 1000.0, 3);
+        double capacityAh = round(u32(232) / 1000.0, 3);  // 0xE8 Restkapazität (empirisch)
         d.mosfetStatus = new DalyBMSData.MosfetStatus(mode, charging, discharging, capacityAh);
 
         Map<String, Boolean> states = new LinkedHashMap<>();
         states.put("CHARGE_MOS", charging);
         states.put("DISCHARGE_MOS", discharging);
         states.put("BALANCING", u8(166) != 0);
-        states.put("CHARGER_PLUGGED", u8(239) != 0);
+        states.put("CHARGER_PLUGGED", u8(238) != 0);  // 0xEE Charger Plugged (PDF-konform)
         d.status = new DalyBMSData.Status(d.cellVoltages.size(), d.temperatures.size(),
                 charging, discharging, states, (int) u32(176));
 
