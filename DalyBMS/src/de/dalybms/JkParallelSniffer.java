@@ -309,8 +309,9 @@ public class JkParallelSniffer {
         //   SLAVE (Typ 01): u32 Little-Endian @ 6, je 4 Byte pro Zelle
         d.cellVoltagesMv.clear();
         if (frameType == TYPE_HOST) {
+            // HOST-Zellspannungen sind u16 Little-Endian: "E2 0C" = 0x0CE2 = 3298 mV
             for (int i = offset + 6; i + 1 < offset + len; i += 2) {
-                int mv = u16(data, i);
+                int mv = u16le(data, i);
                 if (mv >= 1500 && mv <= 4500) {
                     d.cellVoltagesMv.add(mv);
                 } else if (mv == 0 && !d.cellVoltagesMv.isEmpty()) {
@@ -372,6 +373,11 @@ public class JkParallelSniffer {
 
     private static int u16(byte[] data, int off) {
         return ((data[off] & 0xFF) << 8) | (data[off + 1] & 0xFF);
+    }
+
+    /** Little-Endian 16-Bit (fuer HOST-Zellspannungen). */
+    private static int u16le(byte[] data, int off) {
+        return (data[off] & 0xFF) | ((data[off + 1] & 0xFF) << 8);
     }
 
     private static long u32(byte[] data, int off) {
