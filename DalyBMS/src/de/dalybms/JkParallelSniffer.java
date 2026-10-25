@@ -364,9 +364,10 @@ public class JkParallelSniffer {
             }
         }
 
-        logger.fine(String.format("JK %s Frame: %d Zellen, SOC=%d%%, Spannung=%.2fV, Temp=%.1f°C",
+        logger.info(String.format("JK %s Frame dekodiert: %d Zellen, SOC=%d%%, Spannung=%.2fV, Temp=%.1f C, Rest=%d mAh, Voll=%d mAh",
                 typeName, d.cellVoltagesMv.size(), d.socPercent,
-                d.getTotalVoltageV(), d.getTemperatureCelsius()));
+                d.getTotalVoltageV(), d.getTemperatureCelsius(),
+                d.remainingCapacityMah, d.fullCapacityMah));
     }
 
     // ==================== Hilfsfunktionen ====================

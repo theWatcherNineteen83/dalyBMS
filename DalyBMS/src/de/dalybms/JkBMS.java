@@ -182,11 +182,20 @@ public class JkBMS extends DalyBMS {
 
     @Override
     public DalyBMSData getAll() throws IOException {
-        // Prioritaet: Sniffer-Daten (passiv, immer aktuell)
+        // Prioritaet: Sniffer-Daten (passiv, immer aktuell).
+        // Der Sniffer braucht ggf. einige Sekunden fuer den ersten Frame,
+        // daher kurz warten und erneut pruefen.
         if (sniffer != null) {
-            JkParallelSniffer.JkParallelData pData = sniffer.getData(parallelFrameType);
-            if (pData != null && pData.isValid()) {
-                return decodeFromSniffer(pData);
+            for (int wait = 0; wait < 50; wait++) {
+                JkParallelSniffer.JkParallelData pData = sniffer.getData(parallelFrameType);
+                if (pData != null && pData.isValid()) {
+                    return decodeFromSniffer(pData);
+                }
+                // Noch kein gueltiger Frame: 100ms warten und erneut versuchen
+                try { Thread.sleep(100); } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
             }
         }
 
