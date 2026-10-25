@@ -1,3 +1,0 @@
-Manifest-Version: 1.0
-Main-Class: de.dalybms.Main
-Class-Path: lib/jSerialComm-2.11.4.jar lib/org.eclipse.paho.client.mqttv3-1.2.6-20201211.050620-2.jar lib/json-20251224.jar

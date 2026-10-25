@@ -6,7 +6,15 @@ public class Main {
 
     private static final Logger logger = Logger.getLogger("DalyBMS");
 
+    /** Software-Version (im Log beim Start sichtbar zur Verifikation des Builds). */
+    public static final String VERSION = "1.4.0-jk-sniffer";
+
     public static void main(String[] args) {
+        // ==================== Version ausgeben ====================
+        System.out.println("══════════════════════════════════════");
+        System.out.println("  Daly BMS Server - Version " + VERSION);
+        System.out.println("══════════════════════════════════════");
+
         // ==================== Konfiguration laden ====================
         Config config = new Config();
         String configFile = null;
