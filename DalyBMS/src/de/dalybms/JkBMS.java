@@ -347,19 +347,19 @@ public class JkBMS extends DalyBMS {
     private DalyBMSData decodeFromSniffer(JkParallelSniffer.JkParallelData pData) {
         DalyBMSData d = new DalyBMSData();
 
-        // Gesamtspannung aus der Summe der Zellspannungen ableiten
-        // (im Parallelprotokoll ist keine explizite Gesamtspannung enthalten).
-        double voltage = 0;
-        if (pData.cellVoltagesMv != null) {
-            for (int mv : pData.cellVoltagesMv) {
-                voltage += mv;
-            }
-            voltage /= 1000.0;
+        // Gesamtspannung: aus dem Frame (falls vorhanden), sonst Zellsumme.
+        double voltage = pData.totalVoltageMv > 0
+                ? pData.totalVoltageMv / 1000.0
+                : 0;
+        if (voltage <= 0 && pData.cellVoltagesMv != null) {
+            // Fallback: Zellsumme
+            for (int mv : pData.cellVoltagesMv) voltage += mv / 1000.0;
         }
+        double soc = pData.socPercent > 0 ? pData.socPercent : 0;
         d.soc = new DalyBMSData.SOC(
                 voltage,
                 0,  // Strom nicht im Parallelprotokoll
-                -1  // SOC nicht verfuegbar (Host sendet keinen SOC)
+                soc
         );
 
         // Zellspannungen
