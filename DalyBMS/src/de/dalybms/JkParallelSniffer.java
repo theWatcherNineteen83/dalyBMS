@@ -389,15 +389,21 @@ public class JkParallelSniffer {
                 int t = u16le(data, offset + 158);
                 if (t > 0 && t < 1000) d.temperatureRaw = t;
             }
-            // SOC
-            if (len > 173) {
-                int soc = data[offset + 173] & 0xFF;
-                if (soc > 0 && soc <= 100) d.socPercent = soc;
-            }
-            // Restkapazitaet
+            // Restkapazitaet (liefert den entscheidenden Marker Host vs Slave)
             if (len > 178) {
                 long cap = u32le(data, offset + 174);
                 if (cap > 10000 && cap < 1000000) d.remainingCapacityMah = cap;
+            }
+            // SOC: Nur uebernehmen, wenn es der HOST-Frame ist.
+            // Host = Restkapazitaet ~179.6 Ah (< 250 Ah), Slave ~274.6 Ah (> 250 Ah).
+            // Der Slave wird sowieso per Modbus ausgelesen, daher hier ignorieren.
+            if (len > 173) {
+                long restCap = d.remainingCapacityMah;
+                boolean isHostFrame = restCap < 250000; // < 250 Ah = Host
+                if (isHostFrame) {
+                    int soc = data[offset + 173] & 0xFF;
+                    if (soc > 0 && soc <= 100) d.socPercent = soc;
+                }
             }
             // Vollkapazitaet
             if (len > 182) {
