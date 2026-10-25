@@ -691,11 +691,11 @@ public class BmsRestServer {
 
             // ==================== JK-BMS Anzeigen ====================
             if (jkBms1 != null) {
-                html.append("<h2>&#128267; JK-BMS 1 (Akku 1)</h2>");
+                html.append("<h2>&#128267; JK-BMS HOST (Akku 1)</h2>");
                 appendJkHtml(html, fetchJk(1), jk1LastUpdate);
             }
             if (jkBms2 != null) {
-                html.append("<h2>&#128267; JK-BMS 2 (Akku 2)</h2>");
+                html.append("<h2>&#128267; JK-BMS SLAVE (Akku 2)</h2>");
                 appendJkHtml(html, fetchJk(2), jk2LastUpdate);
             }
 

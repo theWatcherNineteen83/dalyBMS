@@ -51,6 +51,7 @@ public class Config {
         props.setProperty("jk.baudrate", "115200");
         props.setProperty("jk.slave_id_1", "1");
         props.setProperty("jk.slave_id_2", "2");
+        props.setProperty("jk.parallel_sniffer", "true");
         props.setProperty("http.port", "8080");
         props.setProperty("http.poll_interval_seconds", "30");
         props.setProperty("mqtt.enabled", "false");
@@ -183,6 +184,10 @@ public class Config {
 
     public int getJkSlaveId2() {
         return Integer.parseInt(props.getProperty("jk.slave_id_2"));
+    }
+
+    public boolean isJkParallelSnifferEnabled() {
+        return Boolean.parseBoolean(props.getProperty("jk.parallel_sniffer"));
     }
 
     public int getHttpPort() {

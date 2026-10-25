@@ -98,25 +98,57 @@ public class Main {
         }
 
         // ==================== JK-BMS verbinden (optional) ====================
-        // 2x JK-BMS an einem zweiten USB/RS485-Bus (Modbus RTU, eigene Slave-Adressen)
-        JkBMS jkBms1 = null;
-        JkBMS jkBms2 = null;
+        // 2x JK-BMS an einem zweiten USB/RS485-Bus.
+        // Modus A: Parallelprotokoll-Sniffer (passiv, liest Host+Slave Frames)
+        // Modus B: Modbus RTU (aktiv, nur fuer Slaves die auf Modbus antworten)
+        JkBMS jkBmsHost = null;   // HOST via Parallelprotokoll (Typ 02)
+        JkBMS jkBmsSlave = null;  // SLAVE via Parallelprotokoll (Typ 01) oder Modbus
+        JkParallelSniffer jkSniffer = null;
+
         if (config.isJkEnabled()) {
             try {
-                logger.info("Verbinde mit JK-BMS 1 (Slave " + config.getJkSlaveId1()
-                        + ") an " + config.getJkDevice() + "...");
-                jkBms1 = new JkBMS(config.getJkSlaveId1());
-                jkBms1.connect(config.getJkDevice());
+                if (config.isJkParallelSnifferEnabled()) {
+                    // === Parallelprotokoll-Modus ===
+                    // Ein JkBMS oeffnet den Port und startet den Sniffer,
+                    // beide (Host+Slave) nutzen denselben Sniffer.
+                    logger.info("JK-BMS Parallelprotokoll-Sniffer wird gestartet...");
 
-                logger.info("Verbinde mit JK-BMS 2 (Slave " + config.getJkSlaveId2()
-                        + ") an " + config.getJkDevice() + "...");
-                jkBms2 = new JkBMS(config.getJkSlaveId2(), jkBms1);
+                    // Port oeffnen (fuer Sniffer)
+                    JkBMS portOwner = new JkBMS(config.getJkSlaveId1());
+                    portOwner.connect(config.getJkDevice());
+                    jkSniffer = portOwner.startSniffer();
+
+                    if (jkSniffer != null) {
+                        // Host (Typ 02) - nutzt nur Sniffer
+                        jkBmsHost = new JkBMS(JkParallelSniffer.TYPE_HOST, jkSniffer);
+                        logger.info("JK-BMS HOST (Typ 02) via Parallelprotokoll konfiguriert");
+
+                        // Slave (Typ 01) - nutzt Sniffer + optional Modbus als Fallback
+                        jkBmsSlave = new JkBMS(JkParallelSniffer.TYPE_SLAVE, jkSniffer);
+                        logger.info("JK-BMS SLAVE (Typ 01) via Parallelprotokoll konfiguriert");
+                    } else {
+                        logger.warning("Sniffer konnte nicht gestartet werden, fallback zu Modbus");
+                        portOwner.disconnect();
+                        portOwner = null;
+                    }
+                }
+
+                // Fallback: reiner Modbus-Modus (wenn Sniffer deaktiviert oder fehlgeschlagen)
+                if (jkBmsHost == null && jkBmsSlave == null) {
+                    logger.info("Verbinde mit JK-BMS 1 (Slave " + config.getJkSlaveId1()
+                            + ") an " + config.getJkDevice() + " via Modbus...");
+                    jkBmsSlave = new JkBMS(config.getJkSlaveId1());
+                    jkBmsSlave.connect(config.getJkDevice());
+
+                    logger.info("Verbinde mit JK-BMS 2 (Slave " + config.getJkSlaveId2()
+                            + ") an " + config.getJkDevice() + " via Modbus...");
+                    jkBmsHost = new JkBMS(config.getJkSlaveId2(), (JkBMS) jkBmsSlave);
+                }
             } catch (Exception e) {
                 logger.severe("JK-BMS Verbindung fehlgeschlagen: " + e.getMessage());
                 logger.severe("Starte ohne JK-BMS weiter.");
-                // JK nicht blockierend: bei Fehler ohne JK weiterlaufen lassen
-                jkBms1 = null;
-                jkBms2 = null;
+                jkBmsHost = null;
+                jkBmsSlave = null;
             }
         }
 
@@ -132,10 +164,11 @@ public class Main {
                     config.getPollIntervalSeconds());
         }
 
-        final JkBMS jk1 = jkBms1;
-        final JkBMS jk2 = jkBms2;
+        final JkBMS jkHost = jkBmsHost;
+        final JkBMS jkSlave = jkBmsSlave;
+        final JkParallelSniffer snifferRef = jkSniffer;
         try {
-            BmsRestServer restServer = new BmsRestServer(bms, config.getHttpPort(), config.isReadOnly(), jk1, jk2);
+            BmsRestServer restServer = new BmsRestServer(bms, config.getHttpPort(), config.isReadOnly(), jkHost, jkSlave);
             restServer.start();
 
             logger.info("Server läuft. Beenden mit Ctrl+C");
@@ -143,8 +176,9 @@ public class Main {
                 logger.info("Server wird beendet...");
                 restServer.stop();
                 bms.disconnect();
-                if (jk1 != null) jk1.disconnect();
-                if (jk2 != null) jk2.disconnect();
+                if (snifferRef != null) snifferRef.stop();
+                if (jkHost != null) jkHost.disconnect();
+                if (jkSlave != null) jkSlave.disconnect();
             }));
 
             Thread.currentThread().join();

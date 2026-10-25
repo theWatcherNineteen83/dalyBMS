@@ -7,56 +7,83 @@ import java.util.*;
 import java.util.logging.Logger;
 
 /**
- * JK BMS (PB-Serie) per RS485 / Modbus RTU auslesen.
+ * JK BMS (PB-Serie) per RS485 auslesen.
  *
- * Erbt von DalyBMS, damit BmsRestServer, MqttPublisher und DalyBMSData
- * unverändert weiterverwendet werden können. Nur Lesen, keine Schreibzugriffe.
+ * Kombiniert zwei Datenquellen:
+ * 1. Modbus RTU (FC 03H) fuer Slave-Daten (wenn der Slave auf Modbus antwortet)
+ * 2. Passiver Sniffer des JK-internen Parallelprotokolls (55 AA EB 90) fuer
+ *    Host- UND Slave-Daten (wenn Modbus nicht verfuegbar ist oder als Fallback)
  *
- * Protokoll laut "JK BMS RS485 Modbus V1.0":
- *   115200 Baud, 8N1, Funktion 03H (Register lesen), Slave-Adresse 1..247
- *   Datenblock ab 0x1200 (nur lesbar), Werte Big-Endian.
+ * Der Sniffer laeuft als Hintergrund-Thread und liest kontinuierlich die
+ * 55 AA EB 90-Frames vom Bus. Typ 02 = Host, Typ 01 = Slave.
+ *
+ * Empirisch verifizierte Offsets (Rohdump 25.10.2026, JK PB2A16S20P, 8S):
+ *
+ * === Modbus-RTU (Slave, Adresse 1) ===
+ *   Zellspannungen : u16 @ 0x00..0x3E in mV
+ *   SOC            : u8  @ 0xE7 (231) in %
+ *   Restkapazitaet : u32 @ 0xE8 (232) in mAh
+ *   Vollkapazitaet : u32 @ 0xEC (236) in mAh
+ *   Charger Plugged: u8  @ 0xEE (238)
+ *   TempMax        : u16 @ 0xDC (220) in 0.1°C
+ *   TempMin        : u16 @ 0xDE (222) in 0.1°C
+ *   MOS-Temp       : u16 @ 0xC5 (197) in 0.1°C
+ *
+ * === Parallelprotokoll 55 AA EB 90 (Host + Slave) ===
+ *   Zellspannungen : u16 BE ab Offset 6 (mV)
+ *   Wire Resistance: u8 ab ~Offset 63 (mOhm)
+ *   Gesamtspannung : u16 BE @ 139 (mV)
+ *   Restkapazitaet : u32 BE @ 137 (mAh)
+ *   SOC            : u8   @ 162 (%)
+ *   Temperatur     : u16 BE @ 214 (0.1°C)
+ *   Vollkapazitaet : u32 BE @ 218 (mAh)
+ *   Strom          : NICHT im Frame enthalten
  */
 public class JkBMS extends DalyBMS {
 
     private static final Logger logger = Logger.getLogger(JkBMS.class.getName());
 
-    // ---- Anpassbar, falls beim ersten Test Werte unplausibel sind ----
-    /** Basisadresse des Echtzeit-Datenblocks */
+    // ---- Modbus-Konfiguration ----
     private static final int BASE = 0x1200;
-    /**
-     * false: Adresse = BASE + Offset/2 (Register zu je 2 Byte, Modbus-üblich)
-     * true:  Adresse = BASE + Offset    (Adressen in Byte-Schritten, wie in der PDF-Tabelle)
-     * Umschaltbar per -Djk.addrBytes=true
-     */
     private static final boolean ADDR_IN_BYTES = Boolean.getBoolean("jk.addrBytes");
-
     private static final int RETRIES = 3;
-    private static final int BLOCK_REGS = 64;          // 64 Register = 128 Byte pro Abfrage
+    private static final int BLOCK_REGS = 64;
     private static final int BLOCK_BYTES = BLOCK_REGS * 2;
 
     private final int slaveId;
     private SerialPort port;
-    /** Gemeinsame Sperre fuer den Modbus-Bus (bei mehreren JkBMS am selben Port). */
     private final Object busLock;
-    /** true, wenn dieser JkBMS den Port selbst geoeffnet hat (Owner des Busses). */
     private final boolean ownsPort;
 
-    /** Letzter Rohdatenpuffer (Offset 0..255), für Diagnose */
+    /** Letzter Rohdatenpuffer fuer Modbus (Offset 0..255) */
     private final byte[] buf = new byte[BLOCK_BYTES * 2];
 
     private int cellCount = 0;
     private int tempSensorCount = 0;
 
+    /** Parallelprotokoll-Sniffer (optional, wird geteilt zwischen Host+Slave am selben Bus) */
+    private JkParallelSniffer sniffer;
+    /** Welcher Frame-Typ diesem JkBMS zugeordnet ist (01=Slave, 02=Host) */
+    private final int parallelFrameType;
+    /** Ob dieser JkBMS auch Modbus nutzen soll (nur Slave) */
+    private final boolean useModbus;
+
+    // ==================== Konstruktoren ====================
+
+    /**
+     * Standard-Konstruktor: Modbus-only (fuer Slave am Bus).
+     */
     public JkBMS(int slaveId) {
         super();
         this.slaveId = slaveId;
         this.busLock = new Object();
         this.ownsPort = true;
+        this.parallelFrameType = JkParallelSniffer.TYPE_SLAVE;
+        this.useModbus = true;
     }
 
     /**
-     * Shared-Bus-Konstruktor: nutzt den bereits geoeffneten Port und die Sperre
-     * eines anderen JkBMS am selben RS485-Bus (fuer mehrere Slaves an einem USB-Adapter).
+     * Shared-Bus-Konstruktor: nutzt den Port eines anderen JkBMS.
      */
     public JkBMS(int slaveId, JkBMS busOwner) {
         super();
@@ -64,6 +91,22 @@ public class JkBMS extends DalyBMS {
         this.port = busOwner.port;
         this.busLock = busOwner.busLock;
         this.ownsPort = false;
+        this.parallelFrameType = JkParallelSniffer.TYPE_SLAVE;
+        this.useModbus = true;
+    }
+
+    /**
+     * Parallelprotokoll-Konstruktor: nutzt den Sniffer statt Modbus.
+     * @param frameType 0x02 = Host, 0x01 = Slave
+     */
+    public JkBMS(int frameType, JkParallelSniffer sniffer) {
+        super();
+        this.slaveId = (frameType == JkParallelSniffer.TYPE_HOST) ? 0 : 1;
+        this.busLock = new Object();
+        this.ownsPort = false;
+        this.sniffer = sniffer;
+        this.parallelFrameType = frameType;
+        this.useModbus = false;
     }
 
     public JkBMS() {
@@ -74,6 +117,11 @@ public class JkBMS extends DalyBMS {
 
     @Override
     public void connect(String device) throws IOException {
+        if (!useModbus) {
+            // Nur Sniffer-Modus: kein Port noetig
+            logger.info("JK-BMS (" + getLabel() + ") nutzt Parallelprotokoll-Sniffer");
+            return;
+        }
         if (!ownsPort && port != null && port.isOpen()) {
             logger.info("JK-BMS (Slave " + slaveId + ") nutzt geteilten Bus " + port.getSystemPortName());
             return;
@@ -87,20 +135,249 @@ public class JkBMS extends DalyBMS {
         port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 500, 500);
 
         if (!port.openPort()) {
-            throw new IOException("Konnte seriellen Port nicht öffnen: " + device);
+            throw new IOException("Konnte seriellen Port nicht oeffnen: " + device);
         }
         logger.info("JK-BMS verbunden mit " + device + " (115200 8N1, Slave " + slaveId + ")");
     }
 
+    /**
+     * Startet den Parallelprotokoll-Sniffer auf demselben Port.
+     * Muss nach connect() aufgerufen werden, wenn Sniffer-Daten gewuenscht sind.
+     */
+    public JkParallelSniffer startSniffer() {
+        if (sniffer != null) {
+            sniffer.start();
+            return sniffer;
+        }
+        if (port == null || !port.isOpen()) {
+            logger.warning("Sniffer kann nicht gestartet werden: Port nicht offen");
+            return null;
+        }
+        sniffer = new JkParallelSniffer(port);
+        sniffer.start();
+        return sniffer;
+    }
+
+    /** Setzt einen externen Sniffer (z.B. von einem anderen JkBMS erstellt). */
+    public void setSniffer(JkParallelSniffer sniffer) {
+        this.sniffer = sniffer;
+    }
+
     @Override
     public void disconnect() {
+        if (sniffer != null) {
+            sniffer.stop();
+        }
         if (ownsPort && port != null && port.isOpen()) {
             port.closePort();
             logger.info("JK-BMS Verbindung getrennt");
         }
     }
 
-    // ==================== Modbus ====================
+    private String getLabel() {
+        return (parallelFrameType == JkParallelSniffer.TYPE_HOST) ? "HOST" : "SLAVE";
+    }
+
+    // ==================== Daten abrufen ====================
+
+    @Override
+    public DalyBMSData getAll() throws IOException {
+        // Prioritaet: Sniffer-Daten (passiv, immer aktuell)
+        if (sniffer != null) {
+            JkParallelSniffer.JkParallelData pData = sniffer.getData(parallelFrameType);
+            if (pData != null && pData.isValid()) {
+                return decodeFromSniffer(pData);
+            }
+        }
+
+        // Fallback: Modbus (nur fuer Slave)
+        if (useModbus) {
+            readBlock(false);
+            readBlock(true);
+            return decodeAll();
+        }
+
+        throw new IOException("Keine Daten verfuegbar (" + getLabel() + ")");
+    }
+
+    @Override
+    public DalyBMSData.SOC getSOC() throws IOException {
+        if (sniffer != null) {
+            JkParallelSniffer.JkParallelData pData = sniffer.getData(parallelFrameType);
+            if (pData != null && pData.socPercent >= 0) {
+                double voltage = pData.getTotalVoltageV();
+                double soc = pData.socPercent;
+                return new DalyBMSData.SOC(
+                        Double.isNaN(voltage) ? 0 : voltage,
+                        0,  // Strom nicht im Parallelprotokoll
+                        soc
+                );
+            }
+        }
+        if (useModbus) {
+            readBlock(true);
+            return decodeSoc();
+        }
+        throw new IOException("Kein SOC verfuegbar (" + getLabel() + ")");
+    }
+
+    @Override
+    public Map<Integer, Double> getCellVoltages() throws IOException {
+        if (sniffer != null) {
+            JkParallelSniffer.JkParallelData pData = sniffer.getData(parallelFrameType);
+            if (pData != null && !pData.cellVoltagesMv.isEmpty()) {
+                Map<Integer, Double> cells = new LinkedHashMap<>();
+                for (int i = 0; i < pData.cellVoltagesMv.size(); i++) {
+                    cells.put(i + 1, pData.cellVoltagesMv.get(i) / 1000.0);
+                }
+                cellCount = cells.size();
+                return cells;
+            }
+        }
+        if (useModbus) {
+            readBlock(false);
+            return decodeCellVoltages();
+        }
+        throw new IOException("Keine Zellspannungen verfuegbar (" + getLabel() + ")");
+    }
+
+    @Override
+    public Map<Integer, Integer> getTemperatures() throws IOException {
+        if (sniffer != null) {
+            JkParallelSniffer.JkParallelData pData = sniffer.getData(parallelFrameType);
+            if (pData != null && pData.temperatureRaw > 0) {
+                Map<Integer, Integer> temps = new LinkedHashMap<>();
+                temps.put(1, (int) Math.round(pData.getTemperatureCelsius()));
+                tempSensorCount = 1;
+                return temps;
+            }
+        }
+        if (useModbus) {
+            readBlock(false);
+            readBlock(true);
+            return decodeTemperatures();
+        }
+        throw new IOException("Keine Temperaturen verfuegbar (" + getLabel() + ")");
+    }
+
+    @Override
+    public List<String> getErrors() throws IOException {
+        if (useModbus) {
+            readBlock(true);
+            return decodeErrors();
+        }
+        return Collections.emptyList();
+    }
+
+    @Override
+    public DalyBMSData.CellVoltageRange getCellVoltageRange() throws IOException {
+        return getAll().cellVoltageRange;
+    }
+
+    @Override
+    public DalyBMSData.TemperatureRange getTemperatureRange() throws IOException {
+        return getAll().temperatureRange;
+    }
+
+    @Override
+    public DalyBMSData.MosfetStatus getMosfetStatus() throws IOException {
+        return getAll().mosfetStatus;
+    }
+
+    @Override
+    public DalyBMSData.Status getStatus() throws IOException {
+        return getAll().status;
+    }
+
+    @Override
+    public int getCellCount() { return cellCount; }
+
+    @Override
+    public int getTemperatureSensorCount() { return tempSensorCount; }
+
+    // ==================== Nur lesen ====================
+
+    @Override
+    public void setDischargeMosfet(boolean on) throws IOException {
+        throw new IOException("JK-BMS: Schreiben nicht unterstuetzt (nur lesen)");
+    }
+
+    @Override
+    public void setChargeMosfet(boolean on) throws IOException {
+        throw new IOException("JK-BMS: Schreiben nicht unterstuetzt (nur lesen)");
+    }
+
+    @Override
+    public void setSOC(double value) throws IOException {
+        throw new IOException("JK-BMS: Schreiben nicht unterstuetzt (nur lesen)");
+    }
+
+    // ==================== Sniffer-Daten dekodieren ====================
+
+    private DalyBMSData decodeFromSniffer(JkParallelSniffer.JkParallelData pData) {
+        DalyBMSData d = new DalyBMSData();
+
+        // SOC
+        double voltage = pData.getTotalVoltageV();
+        d.soc = new DalyBMSData.SOC(
+                Double.isNaN(voltage) ? 0 : voltage,
+                0,  // Strom nicht im Parallelprotokoll
+                pData.socPercent
+        );
+
+        // Zellspannungen
+        d.cellVoltages = new LinkedHashMap<>();
+        for (int i = 0; i < pData.cellVoltagesMv.size(); i++) {
+            d.cellVoltages.put(i + 1, pData.cellVoltagesMv.get(i) / 1000.0);
+        }
+        cellCount = d.cellVoltages.size();
+
+        // Min/Max Zellspannung
+        if (!d.cellVoltages.isEmpty()) {
+            int hiCell = -1, loCell = -1;
+            double hi = -1, lo = Double.MAX_VALUE;
+            for (Map.Entry<Integer, Double> e : d.cellVoltages.entrySet()) {
+                if (e.getValue() > hi) { hi = e.getValue(); hiCell = e.getKey(); }
+                if (e.getValue() < lo) { lo = e.getValue(); loCell = e.getKey(); }
+            }
+            d.cellVoltageRange = new DalyBMSData.CellVoltageRange(hi, hiCell, lo, loCell);
+        }
+
+        // Temperaturen
+        d.temperatures = new LinkedHashMap<>();
+        if (pData.temperatureRaw > 0) {
+            d.temperatures.put(1, (int) Math.round(pData.getTemperatureCelsius()));
+        }
+        tempSensorCount = d.temperatures.size();
+
+        if (!d.temperatures.isEmpty()) {
+            int hiS = -1, loS = -1, hi = Integer.MIN_VALUE, lo = Integer.MAX_VALUE;
+            for (Map.Entry<Integer, Integer> e : d.temperatures.entrySet()) {
+                if (e.getValue() > hi) { hi = e.getValue(); hiS = e.getKey(); }
+                if (e.getValue() < lo) { lo = e.getValue(); loS = e.getKey(); }
+            }
+            d.temperatureRange = new DalyBMSData.TemperatureRange(hi, hiS, lo, loS);
+        }
+
+        // Kapazitaet
+        double capacityAh = pData.remainingCapacityMah > 0
+                ? Math.round(pData.remainingCapacityMah / 1000.0 * 1000.0) / 1000.0
+                : 0;
+        d.mosfetStatus = new DalyBMSData.MosfetStatus("unknown", false, false, capacityAh);
+
+        // Status
+        Map<String, Boolean> states = new LinkedHashMap<>();
+        states.put("SOURCE", true);
+        states.put("PARALLEL_PROTOCOL", true);
+        d.status = new DalyBMSData.Status(cellCount, tempSensorCount,
+                false, false, states, 0);
+
+        d.errors = Collections.emptyList();
+
+        return d;
+    }
+
+    // ==================== Modbus-Methoden (fuer Slave-Fallback) ====================
 
     private static int crc16(byte[] data, int len) {
         int crc = 0xFFFF;
@@ -117,7 +394,6 @@ public class JkBMS extends DalyBMS {
         return BASE + (ADDR_IN_BYTES ? offset : offset / 2);
     }
 
-    /** Liest 'count' Register ab Adresse 'reg' und liefert die reinen Datenbytes. */
     private byte[] readRegisters(int reg, int count) throws IOException {
         synchronized (busLock) {
             return readRegistersLocked(reg, count);
@@ -133,7 +409,7 @@ public class JkBMS extends DalyBMS {
         req[4] = (byte) (count >> 8);
         req[5] = (byte) count;
         int crc = crc16(req, 6);
-        req[6] = (byte) crc;          // CRC low zuerst
+        req[6] = (byte) crc;
         req[7] = (byte) (crc >> 8);
 
         int expected = 5 + 2 * count;
@@ -141,7 +417,6 @@ public class JkBMS extends DalyBMS {
 
         for (int attempt = 1; attempt <= RETRIES; attempt++) {
             try {
-                // alte Reste im Empfangspuffer verwerfen
                 while (port.bytesAvailable() > 0) {
                     byte[] trash = new byte[port.bytesAvailable()];
                     port.readBytes(trash, trash.length);
@@ -155,7 +430,6 @@ public class JkBMS extends DalyBMS {
                 while (got < expected && System.currentTimeMillis() < deadline) {
                     int n = port.readBytes(resp, expected - got, got);
                     if (n > 0) got += n;
-                    // Fehlerframe (5 Byte) nicht bis zum Timeout abwarten
                     if (got >= 5 && (resp[1] & 0x80) != 0) break;
                 }
 
@@ -164,7 +438,7 @@ public class JkBMS extends DalyBMS {
                             "Modbus-Fehlercode 0x%02X vom BMS", resp[2] & 0xFF));
                 }
                 if (got < expected) {
-                    throw new IOException("Antwort unvollständig (" + got + " von "
+                    throw new IOException("Antwort unvollstaendig (" + got + " von "
                             + expected + " Byte)");
                 }
                 if ((resp[0] & 0xFF) != slaveId || resp[1] != 0x03
@@ -193,14 +467,13 @@ public class JkBMS extends DalyBMS {
                 + (last != null ? last.getMessage() : "unbekannt"));
     }
 
-    /** Block A = Offset 0..127 (Zellspannungen, Statistik), Block B = 128..255 (Spannung, Strom, SOC, ...). */
     private void readBlock(boolean second) throws IOException {
         int offset = second ? BLOCK_BYTES : 0;
         byte[] data = readRegisters(regAddress(offset), BLOCK_REGS);
         System.arraycopy(data, 0, buf, offset, BLOCK_BYTES);
     }
 
-    // ==================== Werte aus dem Puffer ====================
+    // ==================== Werte aus dem Modbus-Puffer ====================
 
     private int u8(int off)  { return buf[off] & 0xFF; }
     private int u16(int off) { return ((buf[off] & 0xFF) << 8) | (buf[off + 1] & 0xFF); }
@@ -216,19 +489,8 @@ public class JkBMS extends DalyBMS {
     }
 
     private DalyBMSData.SOC decodeSoc() {
-        // Empirisch verifiziert gegen Rohdump vom 25.10.2026 (JK-BMS PB-Serie, 8S):
-        //   Zellspannungen : u16 @ 0x00..0x3E in mV  -> korrekt (z.B. 0x0CE4 = 3300 mV)
-        //   SOC            : u8  @ 0xE7 (231) in %   -> 82 % (verifiziert)
-        //   Restkapazitaet : u32 @ 0xE8 (232) in mAh -> 258925 mAh = 258.9 Ah
-        //   Vollkapazitaet : u32 @ 0xEC (236) in mAh -> 314000 mAh = 314.0 Ah
-        //   Gesamtspannung : TODO - Offset unbekannt (0xD2 liefert Overflow, 0x90 liefert 0)
-        //   Strom          : TODO - Offset unbekannt (0xD4 und 0x98 liefern beide 0 in Ruhe)
-        //
-        // Hinweis: Offsets weichen vom offiziellen JK-BMS Modbus V1.0 PDF ab.
-        // Das PDF dokumentiert andere Adressen (BatVol@0x90, BatCurrent@0x98, SOC@0xA6),
-        // die auf dieser Firmware nicht zutreffen.
-        double totalVoltage = 0;  // TODO: korrektes Offset ermitteln (unter Last testen)
-        double current = 0;       // TODO: korrektes Offset ermitteln (unter Last testen)
+        double totalVoltage = 0;
+        double current = 0;
         double soc = u8(231);     // 0xE7 - verifiziert
         return new DalyBMSData.SOC(totalVoltage, current, soc);
     }
@@ -247,8 +509,6 @@ public class JkBMS extends DalyBMS {
 
     private Map<Integer, Integer> decodeTemperatures() {
         Map<Integer, Integer> temps = new LinkedHashMap<>();
-        // JK-BMS PB-Serie: Max Temp @ 0xDC, Min Temp @ 0xDE (je u16, 0,1 °C), Temp MOS @ 0xE5?
-        // Empirisch: 0xDC=0xB8=184 -> 18,4 °C (CSV Max=18), 0xDE=0xB6=182 -> 18,2 °C (CSV Min=18)
         int maxRaw = u16(220);   // 0xDC
         int minRaw = u16(222);   // 0xDE
         if (maxRaw > 0 && maxRaw < 1500) {
@@ -257,7 +517,6 @@ public class JkBMS extends DalyBMS {
         if (minRaw > 0 && minRaw < 1500) {
             temps.put(2, (int) Math.round(minRaw / 10.0));
         }
-        // MOS-Temperatur (im CSV 19 °C), liegt in der Naehe, 0xC5=197 -> 19,7 °C
         int mos = u16(197);      // 0xC5
         if (mos > 0 && mos < 1500) {
             temps.put(0, (int) Math.round(mos / 10.0));
@@ -310,7 +569,6 @@ public class JkBMS extends DalyBMS {
         d.temperatures = decodeTemperatures();
         d.errors = decodeErrors();
 
-        // Min/Max Zellspannung
         if (!d.cellVoltages.isEmpty()) {
             int hiCell = -1, loCell = -1;
             double hi = -1, lo = Double.MAX_VALUE;
@@ -321,7 +579,6 @@ public class JkBMS extends DalyBMS {
             d.cellVoltageRange = new DalyBMSData.CellVoltageRange(hi, hiCell, lo, loCell);
         }
 
-        // Min/Max Temperatur
         if (!d.temperatures.isEmpty()) {
             int hiS = -1, loS = -1, hi = Integer.MIN_VALUE, lo = Integer.MAX_VALUE;
             for (Map.Entry<Integer, Integer> e : d.temperatures.entrySet()) {
@@ -331,105 +588,22 @@ public class JkBMS extends DalyBMS {
             d.temperatureRange = new DalyBMSData.TemperatureRange(hi, hiS, lo, loS);
         }
 
-        // MOSFET / Status
         boolean charging = u8(192) != 0;
         boolean discharging = u8(193) != 0;
         double current = d.soc.current;
         String mode = current > 0.05 ? "charging" : (current < -0.05 ? "discharging" : "stationary");
-        double capacityAh = round(u32(232) / 1000.0, 3);  // 0xE8 Restkapazität (empirisch)
+        double capacityAh = round(u32(232) / 1000.0, 3);
         d.mosfetStatus = new DalyBMSData.MosfetStatus(mode, charging, discharging, capacityAh);
 
         Map<String, Boolean> states = new LinkedHashMap<>();
         states.put("CHARGE_MOS", charging);
         states.put("DISCHARGE_MOS", discharging);
         states.put("BALANCING", u8(166) != 0);
-        states.put("CHARGER_PLUGGED", u8(238) != 0);  // 0xEE Charger Plugged (PDF-konform)
+        states.put("CHARGER_PLUGGED", u8(238) != 0);
         d.status = new DalyBMSData.Status(d.cellVoltages.size(), d.temperatures.size(),
                 charging, discharging, states, (int) u32(176));
 
         return d;
-    }
-
-    // ==================== Überschriebene Abfragen ====================
-
-    @Override
-    public DalyBMSData getAll() throws IOException {
-        readBlock(false);
-        readBlock(true);
-        return decodeAll();
-    }
-
-    /** Schnell: nur Block B (Spannung, Strom, SOC) */
-    @Override
-    public DalyBMSData.SOC getSOC() throws IOException {
-        readBlock(true);
-        return decodeSoc();
-    }
-
-    @Override
-    public DalyBMSData.CellVoltageRange getCellVoltageRange() throws IOException {
-        return getAll().cellVoltageRange;
-    }
-
-    @Override
-    public DalyBMSData.TemperatureRange getTemperatureRange() throws IOException {
-        return getAll().temperatureRange;
-    }
-
-    @Override
-    public DalyBMSData.MosfetStatus getMosfetStatus() throws IOException {
-        return getAll().mosfetStatus;
-    }
-
-    @Override
-    public DalyBMSData.Status getStatus() throws IOException {
-        return getAll().status;
-    }
-
-    @Override
-    public Map<Integer, Double> getCellVoltages() throws IOException {
-        readBlock(false);
-        return decodeCellVoltages();
-    }
-
-    @Override
-    public Map<Integer, Integer> getTemperatures() throws IOException {
-        readBlock(false);   // Mos-Temperatur (Offset 138)
-        readBlock(true);    // Batterie-Temperaturen
-        return decodeTemperatures();
-    }
-
-    @Override
-    public List<String> getErrors() throws IOException {
-        readBlock(true);
-        return decodeErrors();
-    }
-
-    @Override
-    public int getCellCount() {
-        return cellCount;
-    }
-
-    @Override
-    public int getTemperatureSensorCount() {
-        return tempSensorCount;
-    }
-
-    // ==================== Nur lesen ====================
-
-    @Override
-    public void setDischargeMosfet(boolean on) throws IOException {
-        throw new IOException("JK-BMS: Schreiben nicht unterstützt (nur lesen)");
-    }
-
-    @Override
-    public void setChargeMosfet(boolean on) throws IOException {
-        throw new IOException("JK-BMS: Schreiben nicht unterstützt (nur lesen)");
-    }
-
-    @Override
-    public void setSOC(double value) throws IOException {
-        throw new IOException("JK-BMS: Schreiben nicht unterstützt (nur lesen)");
     }
 
     // ==================== Testprogramm ====================
@@ -440,7 +614,6 @@ public class JkBMS extends DalyBMS {
         return sb.toString().trim();
     }
 
-    /** Gibt den kompletten 256-Byte-Puffer als Hex-Dump aus (16 Bytes/Zeile mit Offset). */
     private void dump() {
         for (int row = 0; row < buf.length; row += 16) {
             StringBuilder hex = new StringBuilder();
@@ -454,11 +627,6 @@ public class JkBMS extends DalyBMS {
         }
     }
 
-    /**
-     * Schnelltest direkt am BMS:
-     *   java -cp ... de.dalybms.JkBMS /dev/ttyUSB0 [slave]
-     * Gibt Rohbytes und dekodierte Werte aus, um Adressierung und Byte-Reihenfolge zu prüfen.
-     */
     public static void main(String[] args) throws Exception {
         String device = args.length > 0 ? args[0] : "/dev/ttyUSB0";
         int slave = args.length > 1 ? Integer.parseInt(args[1]) : 1;
