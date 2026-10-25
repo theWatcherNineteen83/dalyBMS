@@ -372,21 +372,21 @@ public class JkParallelSniffer {
         // HOST-Frame (Typ 02, ~200 Bytes) enthaelt weitere Felder
         // (empirisch verifiziert gegen Rohdump jk_dump2.txt 25.10.2026, Referenz SOC=57%).
         // Frame-Start = "55" (Header 55 AA EB 90 02 00), Offsets RELATIV dazu:
-        //   Gesamtspannung : u16 LE @ 151 (mV)   -> 0x6711 = 26.38V
-        //   Temperatur 1   : u16 LE @ 158 (0.1C) -> 181 = 18.1C
+        //   Gesamtspannung : u16 LE @ 150 (mV)   -> 0x670E = 26.38V
+        //   Temperatur 1   : u16 LE @ 162 (0.1C) -> 181 = 18.1C
         //   SOC            : u8     @ 173 (%)    -> 0x39 = 57%
         //   Restkapazitaet : u32 LE @ 174 (mAh)  -> 179606 = 179.6 Ah
         //   Vollkapazitaet : u32 LE @ 178 (mAh)  -> 314000 = 314.0 Ah
         // Diese Offsets gelten nur fuer den HOST-Frame (Typ 02).
         if (frameType == TYPE_HOST) {
             // Gesamtspannung
-            if (len > 153) {
-                int v = u16le(data, offset + 151);
+            if (len > 152) {
+                int v = u16le(data, offset + 150);
                 if (v > 10000 && v < 60000) d.totalVoltageMv = v;
             }
-            // Temperatur
-            if (len > 160) {
-                int t = u16le(data, offset + 158);
+            // Temperatur (im 308B-Host-Frame: u16 LE @ 162 = 181 = 18.1°C)
+            if (len > 164) {
+                int t = u16le(data, offset + 162);
                 if (t > 0 && t < 1000) d.temperatureRaw = t;
             }
             // Restkapazitaet (liefert den entscheidenden Marker Host vs Slave)
