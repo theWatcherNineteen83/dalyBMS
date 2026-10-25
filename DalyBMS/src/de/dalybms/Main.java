@@ -93,8 +93,13 @@ public class Main {
             logger.info("Verbinde mit BMS an " + config.getSerialDevice() + "...");
             bms.connect(config.getSerialDevice());
         } catch (Exception e) {
-            logger.severe("BMS-Verbindung fehlgeschlagen: " + e.getMessage());
-            System.exit(1);
+            logger.severe("BMS-Verbindung (Daly) fehlgeschlagen: " + e.getMessage());
+            logger.severe("Server laeuft trotzdem weiter (JK-BMS kann separat ausgelesen werden).");
+            // Daly ist optional: nicht abbrechen, falls JK-BMS aktiv ist
+            if (!config.isJkEnabled()) {
+                logger.severe("Kein JK-BMS konfiguriert - Abbruch.");
+                System.exit(1);
+            }
         }
 
         // ==================== JK-BMS verbinden (optional) ====================
