@@ -91,6 +91,8 @@ public class JkParallelSniffer {
     }
 
     private final Map<Integer, JkParallelData> dataMap = new ConcurrentHashMap<>();
+    /** Zaehlt die ausgegebenen Hex-Dumps pro Frame-Typ (nur die ersten 3). */
+    private final Map<Integer, Integer> frameDumpCount = new ConcurrentHashMap<>();
     private final SerialPort port;
     private volatile boolean running = false;
     private Thread readerThread;
@@ -278,6 +280,24 @@ public class JkParallelSniffer {
         d.lastUpdateMs = System.currentTimeMillis();
 
         String typeName = (frameType == TYPE_HOST) ? "HOST" : "SLAVE";
+
+        // Diagnose: die ersten 8 Frames pro Typ als Hex-Dump ausgeben,
+        // damit die Offsets bestimmt werden koennen.
+        Integer frameCount = frameDumpCount.get(frameType);
+        int cnt = (frameCount == null) ? 0 : frameCount;
+        if (cnt < 3) {
+            frameDumpCount.put(frameType, cnt + 1);
+            StringBuilder hex = new StringBuilder();
+            int dumpEnd = Math.min(offset + len, offset + 256);
+            for (int i = offset; i < dumpEnd; i += 16) {
+                StringBuilder line = new StringBuilder(String.format("  %04X: ", i - offset));
+                for (int j = i; j < i + 16 && j < dumpEnd; j++) {
+                    line.append(String.format("%02X ", data[j] & 0xFF));
+                }
+                hex.append(line.toString().trim()).append("\n");
+            }
+            logger.info("JK " + typeName + " Frame [" + len + " bytes]:\n" + hex.toString());
+        }
 
         // Zellspannungen ab Offset 6 (u16 BE, mV)
         d.cellVoltagesMv.clear();
