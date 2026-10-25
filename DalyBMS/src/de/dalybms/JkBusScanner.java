@@ -41,12 +41,12 @@ public class JkBusScanner {
 
         System.out.println("=== JK-BMS Bus-Scanner ===");
         System.out.println("Port: " + device + " @ 115200 8N1");
-        System.out.println("Scanne Adressen 1-247...");
+        System.out.println("Scanne Adressen 0-247...");
         System.out.println();
 
         int found = 0;
 
-        for (int addr = 1; addr <= 247; addr++) {
+        for (int addr = 0; addr <= 247; addr++) {
             // Modbus RTU: Funktion 03H, Register 0x0000, Anzahl 1
             byte[] req = new byte[8];
             req[0] = (byte) addr;
