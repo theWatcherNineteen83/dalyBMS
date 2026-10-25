@@ -211,8 +211,8 @@ public class JkParallelSniffer {
             // Header suchen
             int hdrIdx = findHeader(ring, searchFrom, len);
             if (hdrIdx < 0) {
-                // Kein Header gefunden: alles bis auf die letzten 3 Bytes verwerfen
-                // (koennte Teil eines Headers sein)
+                // Kein Header gefunden: Nachlauf (letzte 3 Bytes) behalten,
+                // Rest verwerfen.
                 if (len > 3) {
                     System.arraycopy(ring, len - 3, ring, 0, 3);
                     return 3;
@@ -220,37 +220,48 @@ public class JkParallelSniffer {
                 return len;
             }
 
+            // Unbekannte Bytes vor dem Header verwerfen (Polling-Frames etc.)
+            if (hdrIdx > searchFrom) {
+                searchFrom = hdrIdx;
+            }
+
             // Frame-Typ lesen
             int frameType = ring[hdrIdx + 4] & 0xFF;
             if (frameType != TYPE_HOST && frameType != TYPE_SLAVE) {
-                // Unbekannter Typ: Header ueberspringen
                 searchFrom = hdrIdx + 4;
                 continue;
             }
 
-            // Frame-Laenge bestimmen: suche naechsten Header oder Ende
+            // Frame-Ende bestimmen: der naechste 55 AA EB 90 Header.
+            // WICHTIG: Nur dekodieren, wenn das Frame-Ende schon im Puffer ist,
+            // sonst ist der Frame noch unvollstaendig (wird beim naechsten
+            // readBytes-Chunk vervollstaendigt).
             int nextHdr = findHeader(ring, hdrIdx + 4, len);
-            int frameEnd = (nextHdr >= 0) ? nextHdr : len;
-            int frameLen = frameEnd - hdrIdx;
-
-            if (frameLen < MIN_FRAME_SIZE) {
-                // Zu kurz: warten bis mehr Daten kommen
-                if (nextHdr < 0) {
-                    // Keine weiteren Daten: behalten und warten
-                    return len;
+            if (nextHdr < 0) {
+                // Frame noch nicht vollstaendig: Bytes behalten und warten.
+                // Verschiebe den Frame-Anfang an den Pufferanfang.
+                if (hdrIdx > 0) {
+                    System.arraycopy(ring, hdrIdx, ring, 0, len - hdrIdx);
+                    return len - hdrIdx;
                 }
+                return len;
+            }
+
+            int frameLen = nextHdr - hdrIdx;
+            if (frameLen < MIN_FRAME_SIZE) {
+                // Zu kurzer Frame (vermutlich Fragment): ueberspringen.
                 searchFrom = hdrIdx + 4;
                 continue;
             }
 
-            // Frame dekodieren
+            // Vollstaendiger Frame: dekodieren.
             try {
                 decodeFrame(ring, hdrIdx, frameLen, frameType);
             } catch (Exception e) {
                 logger.fine("Frame-Dekodierung fehlgeschlagen (Typ " + frameType + "): " + e.getMessage());
             }
 
-            searchFrom = frameEnd;
+            searchFrom = nextHdr;
         }
 
         // Verbrauchte Bytes entfernen
