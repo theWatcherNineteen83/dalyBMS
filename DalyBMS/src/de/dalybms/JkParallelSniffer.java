@@ -43,8 +43,8 @@ public class JkParallelSniffer {
     public static final int TYPE_SLAVE = 0x01;
     public static final int TYPE_HOST  = 0x02;
 
-    /** Maximale Frame-Groesse (konservativ) */
-    private static final int MAX_FRAME_SIZE = 512;
+    /** Maximale Frame-Groesse (Host-Frame ~308 Bytes, Puffer fuer mehrere Frames) */
+    private static final int MAX_FRAME_SIZE = 400;
 
     /** Minimale Frame-Groesse fuer gueltige Daten */
     private static final int MIN_FRAME_SIZE = 50;
@@ -154,7 +154,7 @@ public class JkParallelSniffer {
     private void readLoop() {
         byte[] buf = new byte[4096];
         // Ringpuffer fuer Frame-Erkennung
-        byte[] ring = new byte[MAX_FRAME_SIZE * 2];
+        byte[] ring = new byte[MAX_FRAME_SIZE * 4];
         int ringLen = 0;
 
         while (running && !Thread.currentThread().isInterrupted()) {
@@ -395,8 +395,8 @@ public class JkParallelSniffer {
             }
         }
 
-        logger.info(String.format("JK %s Frame dekodiert: %d Zellen, SOC=%d%%, Spannung=%.2fV, Temp=%.1f C, Rest=%d mAh, Voll=%d mAh",
-                typeName, d.cellVoltagesMv.size(), d.socPercent,
+        logger.info(String.format("JK %s Frame [%d B] dekodiert: %d Zellen, SOC=%d%%, Spannung=%.2fV, Temp=%.1f C, Rest=%d mAh, Voll=%d mAh",
+                typeName, len, d.cellVoltagesMv.size(), d.socPercent,
                 d.getTotalVoltageV(), d.getTemperatureCelsius(),
                 d.remainingCapacityMah, d.fullCapacityMah));
     }
