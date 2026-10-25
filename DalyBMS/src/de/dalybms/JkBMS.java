@@ -64,7 +64,7 @@ public class JkBMS extends DalyBMS {
     /** Parallelprotokoll-Sniffer (optional, wird geteilt zwischen Host+Slave am selben Bus) */
     private JkParallelSniffer sniffer;
     /** Welcher Frame-Typ diesem JkBMS zugeordnet ist (01=Slave, 02=Host) */
-    private final int parallelFrameType;
+    private int parallelFrameType;
     /** Ob dieser JkBMS auch Modbus nutzen soll (nur Slave) */
     private final boolean useModbus;
 
@@ -163,6 +163,11 @@ public class JkBMS extends DalyBMS {
         this.sniffer = sniffer;
     }
 
+    /** Setzt den Frame-Typ fuer den Parallelprotokoll-Sniffer (01=Slave, 02=Host). */
+    public void setParallelFrameType(int frameType) {
+        this.parallelFrameType = frameType;
+    }
+
     @Override
     public void disconnect() {
         if (sniffer != null) {
@@ -182,91 +187,107 @@ public class JkBMS extends DalyBMS {
 
     @Override
     public DalyBMSData getAll() throws IOException {
-        // Prioritaet: Sniffer-Daten (passiv, immer aktuell).
-        // Der Sniffer braucht ggf. einige Sekunden fuer den ersten Frame,
-        // daher kurz warten und erneut pruefen.
-        if (sniffer != null) {
-            for (int wait = 0; wait < 50; wait++) {
-                JkParallelSniffer.JkParallelData pData = sniffer.getData(parallelFrameType);
-                if (pData != null && pData.isValid()) {
-                    return decodeFromSniffer(pData);
+        // Datenquellen-Zuordnung:
+        //   Host  (useModbus=false): nur Parallelprotokoll-Sniffer (Zellen + WireRes)
+        //   Slave (useModbus=true):  Modbus als Primaerquelle (SOC/Spannung/Kapazitaet/Temp),
+        //                             Sniffer ergaenzt die Zellspannungen.
+        if (useModbus) {
+            // Slave: Modbus zuerst
+            try {
+                readBlock(false);
+                readBlock(true);
+                DalyBMSData d = decodeAll();
+
+                // Wenn Modbus-Zellen leer sind, Zellspannungen aus dem Sniffer ziehen
+                if ((d.cellVoltages == null || d.cellVoltages.isEmpty()) && sniffer != null) {
+                    JkParallelSniffer.JkParallelData pData = waitForSnifferData();
+                    if (pData != null && !pData.cellVoltagesMv.isEmpty()) {
+                        d.cellVoltages = new LinkedHashMap<>();
+                        for (int i = 0; i < pData.cellVoltagesMv.size(); i++) {
+                            d.cellVoltages.put(i + 1, pData.cellVoltagesMv.get(i) / 1000.0);
+                        }
+                        cellCount = d.cellVoltages.size();
+                    }
                 }
-                // Noch kein gueltiger Frame: 100ms warten und erneut versuchen
-                try { Thread.sleep(100); } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
+                return d;
+            } catch (IOException modbusError) {
+                logger.warning("Modbus-Abfrage fehlgeschlagen (" + getLabel()
+                        + "), versuche Sniffer: " + modbusError.getMessage());
+                // Fallback auf Sniffer
             }
         }
 
-        // Fallback: Modbus (nur fuer Slave)
-        if (useModbus) {
-            readBlock(false);
-            readBlock(true);
-            return decodeAll();
+        // Host oder Modbus-Fallback: Sniffer-Daten
+        JkParallelSniffer.JkParallelData pData = waitForSnifferData();
+        if (pData != null && pData.isValid()) {
+            return decodeFromSniffer(pData);
         }
 
         throw new IOException("Keine Daten verfuegbar (" + getLabel() + ")");
     }
 
-    @Override
-    public DalyBMSData.SOC getSOC() throws IOException {
-        if (sniffer != null) {
+    /** Wartet bis zu 5 Sekunden auf einen gueltigen Sniffer-Frame des Typs. */
+    private JkParallelSniffer.JkParallelData waitForSnifferData() {
+        if (sniffer == null) return null;
+        for (int wait = 0; wait < 50; wait++) {
             JkParallelSniffer.JkParallelData pData = sniffer.getData(parallelFrameType);
-            if (pData != null && pData.socPercent >= 0) {
-                double voltage = pData.getTotalVoltageV();
-                double soc = pData.socPercent;
-                return new DalyBMSData.SOC(
-                        Double.isNaN(voltage) ? 0 : voltage,
-                        0,  // Strom nicht im Parallelprotokoll
-                        soc
-                );
+            if (pData != null && pData.isValid()) {
+                return pData;
+            }
+            try { Thread.sleep(100); } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
             }
         }
+        return sniffer.getData(parallelFrameType);
+    }
+
+    @Override
+    public DalyBMSData.SOC getSOC() throws IOException {
         if (useModbus) {
             readBlock(true);
             return decodeSoc();
+        }
+        // Host: nur Sniffer-Zellspannungen, kein SOC im Parallelprotokoll.
+        // Gesamtspannung aus den Zellspannungen ableiten (Summe der 8 Zellen).
+        JkParallelSniffer.JkParallelData pData = sniffer != null ? sniffer.getData(parallelFrameType) : null;
+        if (pData != null && !pData.cellVoltagesMv.isEmpty()) {
+            double totalV = 0;
+            for (int mv : pData.cellVoltagesMv) totalV += mv;
+            totalV /= 1000.0;
+            return new DalyBMSData.SOC(totalV, 0, 0); // SOC unbekannt (0)
         }
         throw new IOException("Kein SOC verfuegbar (" + getLabel() + ")");
     }
 
     @Override
     public Map<Integer, Double> getCellVoltages() throws IOException {
-        if (sniffer != null) {
-            JkParallelSniffer.JkParallelData pData = sniffer.getData(parallelFrameType);
-            if (pData != null && !pData.cellVoltagesMv.isEmpty()) {
-                Map<Integer, Double> cells = new LinkedHashMap<>();
-                for (int i = 0; i < pData.cellVoltagesMv.size(); i++) {
-                    cells.put(i + 1, pData.cellVoltagesMv.get(i) / 1000.0);
-                }
-                cellCount = cells.size();
-                return cells;
-            }
-        }
         if (useModbus) {
             readBlock(false);
             return decodeCellVoltages();
+        }
+        // Host: Sniffer-Zellspannungen
+        JkParallelSniffer.JkParallelData pData = sniffer != null ? sniffer.getData(parallelFrameType) : null;
+        if (pData != null && !pData.cellVoltagesMv.isEmpty()) {
+            Map<Integer, Double> cells = new LinkedHashMap<>();
+            for (int i = 0; i < pData.cellVoltagesMv.size(); i++) {
+                cells.put(i + 1, pData.cellVoltagesMv.get(i) / 1000.0);
+            }
+            cellCount = cells.size();
+            return cells;
         }
         throw new IOException("Keine Zellspannungen verfuegbar (" + getLabel() + ")");
     }
 
     @Override
     public Map<Integer, Integer> getTemperatures() throws IOException {
-        if (sniffer != null) {
-            JkParallelSniffer.JkParallelData pData = sniffer.getData(parallelFrameType);
-            if (pData != null && pData.temperatureRaw > 0) {
-                Map<Integer, Integer> temps = new LinkedHashMap<>();
-                temps.put(1, (int) Math.round(pData.getTemperatureCelsius()));
-                tempSensorCount = 1;
-                return temps;
-            }
-        }
         if (useModbus) {
             readBlock(false);
             readBlock(true);
             return decodeTemperatures();
         }
-        throw new IOException("Keine Temperaturen verfuegbar (" + getLabel() + ")");
+        // Host: keine Temperatur im Parallelprotokoll verfuegbar
+        return new LinkedHashMap<>();
     }
 
     @Override

@@ -1,23 +1,15 @@
 #!/bin/bash
 # ============================================================
 # Daly BMS - Start Script
-# Wechselt ins Projektroot (wo config.properties liegt),
-# damit Config.java die Datei automatisch findet.
+# Liegt neben DalyBMS.jar (in dist/) und findet die config.properties
+# im selben Verzeichnis oder einer Ebene darueber.
 # ============================================================
 
-# Absoluter Pfad zum Skript
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Verzeichnis dieses Skripts (= dist/)
+HERE="$(cd "$(dirname "$0")" && pwd)"
 
-# Projektroot ermitteln
-if [ -f "${SCRIPT_DIR}/config.properties" ]; then
-    ROOT="${SCRIPT_DIR}"
-elif [ -f "$(dirname "${SCRIPT_DIR}")/config.properties" ]; then
-    ROOT="$(dirname "${SCRIPT_DIR}")"
-else
-    ROOT="${SCRIPT_DIR}"
-fi
-
-JAR="${ROOT}/dist/DalyBMS.jar"
+# JAR liegt immer im selben Verzeichnis wie dieses Skript
+JAR="${HERE}/DalyBMS.jar"
 
 if [ ! -f "${JAR}" ]; then
     echo "FEHLER: DalyBMS.jar nicht gefunden unter ${JAR}"
@@ -25,8 +17,19 @@ if [ ! -f "${JAR}" ]; then
     exit 1
 fi
 
-cd "${ROOT}" || exit 1
+# config.properties: neben der JAR, oder im Projektroot darueber
+if [ -f "${HERE}/config.properties" ]; then
+    CFGDIR="${HERE}"
+elif [ -f "$(dirname "${HERE}")/config.properties" ]; then
+    CFGDIR="$(dirname "${HERE}")"
+else
+    CFGDIR="${HERE}"
+fi
 
-echo "Starte DalyBMS aus ${ROOT} ..."
-echo "Config: ${ROOT}/config.properties"
+# Arbeitsverzeichnis auf das config-Verzeichnis setzen,
+# damit Config.java die Datei im Arbeitsverzeichnis findet.
+cd "${CFGDIR}" || exit 1
+
+echo "Starte DalyBMS aus ${CFGDIR} ..."
+echo "Config: ${CFGDIR}/config.properties"
 java -jar "${JAR}" "$@"

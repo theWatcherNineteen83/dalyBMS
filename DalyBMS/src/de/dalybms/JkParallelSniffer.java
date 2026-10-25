@@ -78,7 +78,12 @@ public class JkParallelSniffer {
         public final List<Integer> wireResistance = Collections.synchronizedList(new ArrayList<>());
 
         public boolean isValid() {
-            return lastUpdateMs > 0 && socPercent >= 0;
+            // Der Sniffer liefert nur Zellspannungen + Wire Resistance,
+            // kein SOC. Gueltig = innerhalb der letzten 30s ein Frame
+            // mit mindestens einer Zellspannung empfangen.
+            return lastUpdateMs > 0
+                    && (System.currentTimeMillis() - lastUpdateMs) < 30000
+                    && !cellVoltagesMv.isEmpty();
         }
 
         public double getTemperatureCelsius() {
@@ -299,16 +304,28 @@ public class JkParallelSniffer {
             logger.info("JK " + typeName + " Frame [" + len + " bytes]:\n" + hex.toString());
         }
 
-        // Zellspannungen ab Offset 6 (u16 BE, mV)
+        // Zellspannungen: Format haengt vom Frame-Typ ab.
+        //   HOST (Typ 02): u16 Big-Endian @ 6..21 (8 Zellen)
+        //   SLAVE (Typ 01): u32 Little-Endian @ 6, je 4 Byte pro Zelle
         d.cellVoltagesMv.clear();
-        for (int i = 6; i + 1 < Math.min(offset + len, 70); i += 2) {
-            int relOff = i - offset;
-            if (relOff < 6) continue;
-            int mv = u16(data, i);
-            if (mv >= 2000 && mv <= 4500) {
-                d.cellVoltagesMv.add(mv);
-            } else if (mv == 0 && !d.cellVoltagesMv.isEmpty()) {
-                break;
+        if (frameType == TYPE_HOST) {
+            for (int i = offset + 6; i + 1 < offset + len; i += 2) {
+                int mv = u16(data, i);
+                if (mv >= 1500 && mv <= 4500) {
+                    d.cellVoltagesMv.add(mv);
+                } else if (mv == 0 && !d.cellVoltagesMv.isEmpty()) {
+                    break;
+                }
+            }
+        } else {
+            // Slave: u32 LE, 4 Byte pro Zelle
+            for (int i = offset + 6; i + 3 < offset + len; i += 4) {
+                int mv = u32le(data, i);
+                if (mv >= 1500 && mv <= 4500) {
+                    d.cellVoltagesMv.add(mv);
+                } else {
+                    break;
+                }
             }
         }
 
@@ -340,49 +357,10 @@ public class JkParallelSniffer {
             }
         }
 
-        // Die folgenden Offsets sind empirisch aus dem Host-Dump (Typ 02).
-        // Fuer den Slave (Typ 01) muessen sie ggf. angepasst werden.
-        // Wir pruefen Plausibilitaet und verwenden nur valide Werte.
-
-        // Gesamtspannung: u16 BE @ relativer Offset 139 (im Frame)
-        if (len > 141) {
-            int voltageMv = u16(data, offset + 139);
-            if (voltageMv > 10000 && voltageMv < 60000) {
-                d.totalVoltageMv = voltageMv;
-            }
-        }
-
-        // Restkapazitaet: u32 BE @ relativer Offset 137
-        if (len > 141) {
-            long capMah = u32(data, offset + 137);
-            if (capMah > 50000 && capMah < 500000) {
-                d.remainingCapacityMah = capMah;
-            }
-        }
-
-        // SOC: u8 @ relativer Offset 162
-        if (len > 162) {
-            int soc = data[offset + 162] & 0xFF;
-            if (soc >= 0 && soc <= 100) {
-                d.socPercent = soc;
-            }
-        }
-
-        // Temperatur: u16 BE @ relativer Offset 214 (0.1°C)
-        if (len > 216) {
-            int tempRaw = u16(data, offset + 214);
-            if (tempRaw > 0 && tempRaw < 1000) {
-                d.temperatureRaw = tempRaw;
-            }
-        }
-
-        // Vollkapazitaet: u32 BE @ relativer Offset 218
-        if (len > 222) {
-            long fullCap = u32(data, offset + 218);
-            if (fullCap > 50000 && fullCap < 500000) {
-                d.fullCapacityMah = fullCap;
-            }
-        }
+        // SOC / Gesamtspannung / Temperatur / Kapazitaet sind im
+        // Parallelprotokoll NICHT enthalten (nur Zellspannungen + Wire Resistance).
+        // Diese Werte muessen per Modbus (fuer den Slave) abgefragt werden.
+        // Fuer den Host sind sie ueber das Parallelprotokoll nicht verfuegbar.
 
         logger.info(String.format("JK %s Frame dekodiert: %d Zellen, SOC=%d%%, Spannung=%.2fV, Temp=%.1f C, Rest=%d mAh, Voll=%d mAh",
                 typeName, d.cellVoltagesMv.size(), d.socPercent,
@@ -398,5 +376,13 @@ public class JkParallelSniffer {
 
     private static long u32(byte[] data, int off) {
         return ((long) u16(data, off) << 16) | u16(data, off + 2);
+    }
+
+    /** Little-Endian 32-Bit (fuer Slave-Zellspannungen). */
+    private static int u32le(byte[] data, int off) {
+        return (data[off] & 0xFF)
+                | ((data[off + 1] & 0xFF) << 8)
+                | ((data[off + 2] & 0xFF) << 16)
+                | ((data[off + 3] & 0xFF) << 24);
     }
 }

@@ -124,13 +124,20 @@ public class Main {
                     jkSniffer = portOwner.startSniffer();
 
                     if (jkSniffer != null) {
-                        // Host (Typ 02) - nutzt nur Sniffer
+                        // Host (Typ 02) - antwortet NICHT auf Modbus,
+                        // nur Zellspannungen + WireRes ueber den Sniffer.
                         jkBmsHost = new JkBMS(JkParallelSniffer.TYPE_HOST, jkSniffer);
+                        jkBmsHost.setSniffer(jkSniffer);
                         logger.info("JK-BMS HOST (Typ 02) via Parallelprotokoll konfiguriert");
 
-                        // Slave (Typ 01) - nutzt Sniffer + optional Modbus als Fallback
-                        jkBmsSlave = new JkBMS(JkParallelSniffer.TYPE_SLAVE, jkSniffer);
-                        logger.info("JK-BMS SLAVE (Typ 01) via Parallelprotokoll konfiguriert");
+                        // Slave (Typ 01) - antwortet auf Modbus (Adresse 1).
+                        // Modbus als Primaerquelle (SOC/Spannung/Kapazitaet/Temp/Zellen),
+                        // Sniffer als Ergaenzung.
+                        jkBmsSlave = new JkBMS(config.getJkSlaveId1());
+                        jkBmsSlave.connect(config.getJkDevice());
+                        jkBmsSlave.setSniffer(jkSniffer);
+                        jkBmsSlave.setParallelFrameType(JkParallelSniffer.TYPE_SLAVE);
+                        logger.info("JK-BMS SLAVE (Typ 01) via Modbus + Parallelprotokoll konfiguriert");
                     } else {
                         logger.warning("Sniffer konnte nicht gestartet werden, fallback zu Modbus");
                         portOwner.disconnect();
